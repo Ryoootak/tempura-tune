@@ -1,0 +1,38 @@
+# TempuraTune 進捗管理
+
+## 現在のPhase
+**Phase 0 完了(確認待ち)**
+
+## 現在の構成方針
+- リポジトリ名は `tempura-tune`
+- アプリ表示名は `TempuraTune`
+- デザイン参照元は `design/TempuraTune.html`
+
+## 各Phaseのステータス
+- Phase 0: ✅ 完了
+- Phase 1: ⚪ 未着手
+- Phase 2: ⚪ 未着手
+- Phase 3: ⚪ 未着手
+- Phase 4: ⚪ 未着手
+- Phase 5: ⚪ 未着手
+- Phase 6: ⚪ 未着手
+- Phase 7: ⚪ 未着手
+
+凡例: ✅完了 🟡進行中 ⚪未着手 🔴ブロック中
+
+## セッションログ
+新セッション開始時、ここに記載してから作業開始。
+
+### 2026-04-21
+- TempuraTuneプロジェクト初期化
+- .mdファイル群配置
+- design/TempuraTune.html 配置
+- 命名ルールを `tempura-tune` / `TempuraTune` に統一
+- Phase 0 のドキュメント確認完了
+- `tempura-tune/` で `git init` 実行
+- 初回コミット作成
+- Phase 0 完了、確認待ち
+
+## 次のアクション
+- Phase 0の動作確認
+- 私のOK後 Phase 1 へ
