@@ -38,6 +38,8 @@
 - `src/app/layout.tsx` の metadata を TempuraTune 用に更新
 - `npm run dev` で localhost:3000 起動確認
 - Phase 1 完了、確認待ち
+- GitHub `origin` を設定
+- `main` ブランチを GitHub に初回 push
 
 ## 次のアクション
 - Phase 1の動作確認
