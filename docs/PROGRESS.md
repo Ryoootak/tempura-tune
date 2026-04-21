@@ -1,7 +1,7 @@
 # TempuraTune 進捗管理
 
 ## 現在のPhase
-**Phase 1 完了(確認待ち)**
+**Phase 2 完了(確認待ち)**
 
 ## 現在の構成方針
 - リポジトリ名は `tempura-tune`
@@ -11,7 +11,7 @@
 ## 各Phaseのステータス
 - Phase 0: ✅ 完了
 - Phase 1: ✅ 完了
-- Phase 2: ⚪ 未着手
+- Phase 2: ✅ 完了
 - Phase 3: ⚪ 未着手
 - Phase 4: ⚪ 未着手
 - Phase 5: ⚪ 未着手
@@ -40,7 +40,13 @@
 - Phase 1 完了、確認待ち
 - GitHub `origin` を設定
 - `main` ブランチを GitHub に初回 push
+- Phase 2 開始
+- `/api/analyze` 実装着手
+- エラー系: `audio file required` / `unsupported format` を確認
+- 正常系: `samples/sample1.m4a` で 200 JSON レスポンスを確認
+- `.env.local.example` を復元
+- Phase 2 完了、確認待ち
 
 ## 次のアクション
-- Phase 1の動作確認
-- 私のOK後 Phase 2 へ
+- Phase 2 の確認
+- 私のOK後 Phase 3 へ

@@ -53,3 +53,9 @@
 - 選択肢: 既存ルートで強行 / 一時ディレクトリ生成後に移植
 - 採用理由: `CLAUDE.md` と `design/` が競合して `create-next-app .` が停止したため、既存ドキュメント構成を保ったまま安全にPhase 1を進められる
 - 不採用理由: 既存ルートでの生成は競合ファイルにより進行不能だった
+
+## 2026-04-21: Phase 2のGeminiモデル
+- 判断: `/api/analyze` では `gemini-2.5-flash` を使用
+- 選択肢: `gemini-2.5-flash` / `gemini-3-flash-preview` / `Gemini 3.1 Flash` 系
+- 採用理由: 公式ドキュメント上で音声入力と安定利用の両方に素直に乗せやすく、structured output との相性も良い
+- 不採用理由: `Gemini 3.1 Flash` は確認時点で Live/TTS 系の案内が中心で、今回の通常 `generateContent` 用モデル名としては採用しづらかった

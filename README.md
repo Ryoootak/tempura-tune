@@ -31,13 +31,13 @@ tempura-tune/
 箸を油に入れるだけで、適温かどうかが分かる。
 
 ## ステータス
-🚧 開発中 (Phase 0)
+🚧 開発中 (Phase 2)
 
 ## 技術スタック
-- Next.js 14
+- Next.js 16
 - TypeScript
 - Tailwind CSS
-- Gemini 3.1 Flash API
+- Gemini 2.5 Flash API
 - (将来) Capacitor for iOS/Android
 
 ## ドキュメント
@@ -46,7 +46,33 @@ tempura-tune/
 - 設計判断: `docs/DECISIONS.md`
 
 ## セットアップ
-(Phase 1完了後に追記)
+```bash
+npm install
+cp .env.local.example .env.local
+```
+
+`.env.local` に `GEMINI_API_KEY` を設定してから開発サーバーを起動:
+
+```bash
+npm run dev
+```
+
+## API確認
+正常系:
+
+```bash
+curl -X POST http://localhost:3000/api/analyze \
+  -F "audio=@sample.m4a"
+```
+
+`sample.m4a` は自分で用意した確認用のダミー音声ファイル名の例です。
+
+エラー系:
+
+```bash
+curl -X POST http://localhost:3000/api/analyze
+curl -X POST http://localhost:3000/api/analyze -F "audio=@README.md"
+```
 
 ## ライセンス
 個人開発、未定

@@ -15,7 +15,7 @@ APIエンドポイントを単体で動かす。UIはまだ作らない。
 
 ### 処理フロー
 1. 音声ファイル受信、バリデーション
-2. Gemini 3.1 Flash APIに送信
+2. Gemini 2.5 Flash APIに送信
 3. システムプロンプト適用
 4. JSONレスポンス返却
 
@@ -70,17 +70,17 @@ advice は天ぷら職人風の一言で、ユーザーに次のアクション
 - `src/app/api/analyze/route.ts`
 
 ## 完了条件
-- [ ] curlで音声ファイル送信 → JSONレスポンス
-- [ ] 各エラーケースで適切なステータス
-- [ ] README.mdにcurl実行例を追記
-- [ ] commit完了
+- [x] curlで音声ファイル送信 → JSONレスポンス
+- [x] 各エラーケースで適切なステータス
+- [x] README.mdにcurl実行例を追記
+- [x] commit完了
 
 ## 動作確認方法
 
 ### 正常系
 ```bash
 curl -X POST http://localhost:3000/api/analyze \
-  -F "audio=@test.m4a"
+  -F "audio=@samples/sample1.m4a"
 ```
 
 期待レスポンス:
@@ -88,8 +88,8 @@ curl -X POST http://localhost:3000/api/analyze \
 {
   "zone": "適温",
   "estimated_temp_range": "170-180℃",
-  "confidence": 0.85,
-  "advice": "今が投入のタイミングです"
+  "confidence": 0.9,
+  "advice": "油の熱がしっかりと安定しております。この調子で、最高の揚げ物を作り上げてください。"
 }
 ```
 
@@ -101,13 +101,16 @@ curl -X POST http://localhost:3000/api/analyze
 
 # 不正な形式
 curl -X POST http://localhost:3000/api/analyze \
-  -F "audio=@test.txt"
+  -F "audio=@README.md"
 # 期待: 400
 ```
 
 ## 注意事項
 - 音声ファイルがまだ無くても、ダミーファイル(無音や
   適当な音声)でAPI接続できればOK
+- `sample.m4a` は同梱ファイルではなく、確認用に自分で置く
+  ダミー音声ファイル名の例
+- 実確認では `samples/sample1.m4a` を使って 200 JSON を確認済み
 - 実音声での精度検証は Phase 3 で実施
 - Gemini APIのレスポンスを必ずJSON形式に整形してから返す
 
