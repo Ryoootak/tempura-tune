@@ -29,6 +29,10 @@ npx create-next-app@latest .
 README.md と .gitignore は **No(上書きしない)** を選択。
 他は Yes。
 
+実作業メモ:
+- 既存の `CLAUDE.md` と `design/` が競合したため、
+  一時ディレクトリで生成してから必要ファイルのみ移植した
+
 ### 2. 依存パッケージ追加
 ```bash
 npm install @google/genai
@@ -57,12 +61,12 @@ npm run dev
 ```
 
 ## 完了条件
-- [ ] Next.jsプロジェクトが作成されている
-- [ ] @google/genai がpackage.jsonにある
-- [ ] .env.local.example が存在
-- [ ] layout.tsx のmetadataがTempuraTune用に更新
-- [ ] localhost:3000で初期画面が表示される
-- [ ] commit完了
+- [x] Next.jsプロジェクトが作成されている
+- [x] @google/genai がpackage.jsonにある
+- [x] .env.local.example が存在
+- [x] layout.tsx のmetadataがTempuraTune用に更新
+- [x] localhost:3000で初期画面が表示される
+- [x] commit完了
 
 ## 動作確認方法
 1. ブラウザで http://localhost:3000 を開く

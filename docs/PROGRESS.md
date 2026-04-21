@@ -1,7 +1,7 @@
 # TempuraTune 進捗管理
 
 ## 現在のPhase
-**Phase 0 完了(確認待ち)**
+**Phase 1 完了(確認待ち)**
 
 ## 現在の構成方針
 - リポジトリ名は `tempura-tune`
@@ -10,7 +10,7 @@
 
 ## 各Phaseのステータス
 - Phase 0: ✅ 完了
-- Phase 1: ⚪ 未着手
+- Phase 1: ✅ 完了
 - Phase 2: ⚪ 未着手
 - Phase 3: ⚪ 未着手
 - Phase 4: ⚪ 未着手
@@ -32,7 +32,13 @@
 - `tempura-tune/` で `git init` 実行
 - 初回コミット作成
 - Phase 0 完了、確認待ち
+- Next.js 16 + TypeScript + Tailwind CSS を導入
+- `@google/genai` を追加
+- `.env.local.example` を作成
+- `src/app/layout.tsx` の metadata を TempuraTune 用に更新
+- `npm run dev` で localhost:3000 起動確認
+- Phase 1 完了、確認待ち
 
 ## 次のアクション
-- Phase 0の動作確認
-- 私のOK後 Phase 1 へ
+- Phase 1の動作確認
+- 私のOK後 Phase 2 へ

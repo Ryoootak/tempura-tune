@@ -47,3 +47,9 @@
 - 選択肢: `tempuratune` / `tempura-tune` / `TempuraTune`
 - 採用理由: 物理パスはkebab-caseの方が読みやすく、表示名はブランドとしてCamelCaseが自然
 - 不採用理由: `tempuratune` は単語境界が見えづらく、`TempuraTune` をパスに使うとCLI操作でぶれやすい
+
+## 2026-04-21: Next.js導入手順
+- 判断: 既存ルートに直接 `create-next-app .` はせず、一時ディレクトリで生成後に必要ファイルだけ移植
+- 選択肢: 既存ルートで強行 / 一時ディレクトリ生成後に移植
+- 採用理由: `CLAUDE.md` と `design/` が競合して `create-next-app .` が停止したため、既存ドキュメント構成を保ったまま安全にPhase 1を進められる
+- 不採用理由: 既存ルートでの生成は競合ファイルにより進行不能だった
