@@ -24,12 +24,8 @@ const ANALYSIS_RESPONSE_SCHEMA = {
       enum: ["UNDER", "PERFECT", "OVER"],
       description: "Whether the current zone is below, matching, or above the user's target.",
     },
-    acoustic_reasoning: {
-      type: "string",
-      description: "One brief sentence explaining the acoustic features detected (e.g. frequency peaks, burst density, texture).",
-    },
   },
-  required: ["current_zone", "judgment", "acoustic_reasoning"],
+  required: ["current_zone", "judgment"],
 } as const;
 
 type TargetMode = "low" | "medium" | "high";
@@ -97,7 +93,6 @@ Return JSON only.`;
 type AnalysisResult = {
   current_zone: "TOO_LOW" | "LOW" | "MEDIUM" | "HIGH" | "TOO_HIGH";
   judgment: "UNDER" | "PERFECT" | "OVER";
-  acoustic_reasoning: string;
 };
 
 export const runtime = "nodejs";
@@ -129,14 +124,9 @@ function parseAnalysisResult(rawText: string | undefined): AnalysisResult {
   if (!validJudgments.includes(parsed.judgment as never)) {
     throw new Error("invalid judgment");
   }
-  if (typeof parsed.acoustic_reasoning !== "string" || !parsed.acoustic_reasoning.trim()) {
-    throw new Error("invalid acoustic_reasoning");
-  }
-
   return {
     current_zone: parsed.current_zone!,
     judgment: parsed.judgment!,
-    acoustic_reasoning: parsed.acoustic_reasoning.trim(),
   };
 }
 

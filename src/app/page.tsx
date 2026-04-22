@@ -15,7 +15,6 @@ type TargetMode = {
 type AnalysisResult = {
   current_zone: "TOO_LOW" | "LOW" | "MEDIUM" | "HIGH" | "TOO_HIGH";
   judgment: "UNDER" | "PERFECT" | "OVER";
-  acoustic_reasoning: string;
 };
 
 type ScreenState = "select" | "measure";
@@ -50,13 +49,13 @@ const ZONE_NEEDLE_TEMP: Record<string, number> = {
   TOO_HIGH: 207,
 };
 
-// Onomatopoeia and Japanese label per zone
-const ZONE_DISPLAY: Record<string, { label: string; onomato: string }> = {
-  TOO_LOW:  { label: "低すぎ",  onomato: "Boko... Boko..." },
-  LOW:      { label: "低温",    onomato: "Shuwa-shuwa" },
-  MEDIUM:   { label: "中温",    onomato: "Pichi-pichi" },
-  HIGH:     { label: "高温",    onomato: "Chiri-chiri" },
-  TOO_HIGH: { label: "高すぎ",  onomato: "Bachi! Pan!" },
+// Zone display data: English name + onomatopoeia
+const ZONE_DISPLAY: Record<string, { name: string; onomato: string }> = {
+  TOO_LOW:  { name: "Too Low",  onomato: "Boko... Boko..." },
+  LOW:      { name: "Low",      onomato: "Shuwa-shuwa" },
+  MEDIUM:   { name: "Medium",   onomato: "Pichi-pichi" },
+  HIGH:     { name: "High",     onomato: "Chiri-chiri" },
+  TOO_HIGH: { name: "Too High", onomato: "Bachi! Pan!" },
 };
 
 const ZONE_FOR_MODE: Record<"low" | "medium" | "high", AnalysisResult["current_zone"]> = {
@@ -152,26 +151,33 @@ async function analyzeAudioChunk(
 
 // ─── UI Components ────────────────────────────────────────────
 
-function ListeningBars({ active }: { active: boolean }) {
+function StatusBadge({ activity }: { activity: ActivityState }) {
+  const config: Record<string, { text: string; color: string; dot?: boolean }> = {
+    permission: { text: "Getting mic...",  color: "rgba(255,255,255,0.5)" },
+    listening:  { text: "LISTENING",       color: "oklch(0.83 0.16 55)",  dot: true },
+    analyzing:  { text: "ANALYZING",       color: "rgba(255,255,255,0.6)", dot: true },
+    paused:     { text: "PAUSED",          color: "rgba(255,255,255,0.35)" },
+  };
+  const c = config[activity];
+  if (!c) return <div style={{ height: 32 }} />;
   return (
-    <div className="flex items-center gap-1.5 h-8">
-      {[0, 1, 2, 3, 4].map((i) => (
-        <div
-          key={i}
-          className="w-1.5 rounded-full bg-white/85"
-          style={{
-            height: 10,
-            animation: active ? `barPulse 1000ms ease-in-out ${i * 120}ms infinite` : "none",
-            opacity: active ? 1 : 0.2,
-            transition: "opacity 300ms",
-          }}
-        />
-      ))}
+    <div className="relative z-10 flex justify-center pb-1">
+      <div className="flex items-center gap-2 px-4 py-1.5 rounded-full"
+        style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.10)" }}>
+        {c.dot && (
+          <span style={{
+            width: 7, height: 7, borderRadius: 9999, background: c.color, flexShrink: 0,
+            animation: "dotPulse 1.2s ease-in-out infinite",
+            display: "inline-block",
+          }} />
+        )}
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.10em", color: c.color }}>
+          {c.text}
+        </span>
+      </div>
       <style>{`
-        @keyframes barPulse {
-          0%, 100% { height: 8px; opacity: 0.5; }
-          50%       { height: 28px; opacity: 1; }
-        }
+        @keyframes dotPulse { 0%,100%{opacity:.4;transform:scale(.8)} 50%{opacity:1;transform:scale(1)} }
+        @keyframes tunePulse { 0%,100%{opacity:.35} 50%{opacity:.9} }
       `}</style>
     </div>
   );
@@ -379,7 +385,7 @@ function MeasureScreen({
       <OnTargetFlash visible={onTarget} />
 
       {/* Top bar */}
-      <div className="relative z-10 flex items-center justify-between px-5 pt-12 pb-2">
+      <div className="relative z-10 flex items-center justify-between px-5 pt-12 pb-3">
         <button
           type="button"
           onClick={onBack}
@@ -390,11 +396,11 @@ function MeasureScreen({
           </svg>
           戻る
         </button>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-white/55">{mode.emoji} {mode.label}</span>
-          <ListeningBars active={isActive} />
-        </div>
+        <span className="text-sm text-white/55">{mode.emoji} {mode.label}</span>
       </div>
+
+      {/* Status badge */}
+      <StatusBadge activity={activity} />
 
       {/* Meter */}
       <div className="relative z-10 flex justify-center pt-2">
@@ -404,27 +410,31 @@ function MeasureScreen({
             {result ? (
               <>
                 <div style={{
-                  fontSize: 28,
+                  fontSize: 32,
                   fontWeight: 800,
                   color: currentColor,
                   textShadow: `0 0 30px ${currentColor}66`,
                   transition: "color 300ms linear",
                   letterSpacing: -0.5,
                 }}>
-                  {ZONE_DISPLAY[currentZone]?.onomato ?? currentZone}
+                  {ZONE_DISPLAY[currentZone]?.name ?? currentZone}
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.45)", marginTop: 4 }}>
-                  {ZONE_DISPLAY[currentZone]?.label}
+                <div style={{ fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.38)", marginTop: 4 }}>
+                  {ZONE_DISPLAY[currentZone]?.onomato}
                 </div>
               </>
-            ) : (
+            ) : isActive ? (
               <div style={{
-                fontSize: 32,
+                fontSize: 20,
                 fontWeight: 700,
-                color: "rgba(255,255,255,0.25)",
-                letterSpacing: -1,
-                opacity: isIdle || isPaused ? 1 : 0.5,
+                color: "rgba(255,255,255,0.55)",
+                letterSpacing: 0.5,
+                animation: "tunePulse 2s ease-in-out infinite",
               }}>
+                Now Tuning
+              </div>
+            ) : (
+              <div style={{ fontSize: 28, fontWeight: 700, color: "rgba(255,255,255,0.18)" }}>
                 --
               </div>
             )}
@@ -432,40 +442,32 @@ function MeasureScreen({
         </div>
       </div>
 
-      {/* Judgment / target row */}
-      <div className="relative z-10 flex justify-center items-center gap-2.5 mt-1">
-        {result ? (
-          result.judgment === "PERFECT" ? (
-            <div style={{ fontSize: 16, fontWeight: 700, color: "oklch(0.78 0.17 145)" }}>適温 ✓</div>
-          ) : (
-            <div className="flex items-center gap-2" style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontWeight: 600 }}>
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
-                style={{ transform: result.judgment === "UNDER" ? "none" : "rotate(180deg)" }}
-              >
-                <path d="M10 3 L10 16 M4 8 L10 3 L16 8" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <span>{result.judgment === "UNDER" ? "温度を上げて" : "温度を下げて"}</span>
+      {/* Judgment badge */}
+      <div className="relative z-10 flex justify-center mt-2" style={{ minHeight: 36 }}>
+        {result && (() => {
+          const j = result.judgment;
+          const cfg = j === "PERFECT"
+            ? { label: "✓ ON TARGET",  bg: "oklch(0.78 0.17 145 / 0.15)", border: "oklch(0.78 0.17 145 / 0.45)", color: "oklch(0.85 0.17 145)" }
+            : j === "UNDER"
+            ? { label: "↑ HEAT UP",    bg: "oklch(0.83 0.16 55 / 0.15)",  border: "oklch(0.83 0.16 55 / 0.45)",  color: "oklch(0.88 0.16 55)"  }
+            : { label: "↓ COOL DOWN",  bg: "oklch(0.72 0.17 230 / 0.15)", border: "oklch(0.72 0.17 230 / 0.45)", color: "oklch(0.78 0.17 230)" };
+          return (
+            <div style={{
+              background: cfg.bg,
+              border: `1px solid ${cfg.border}`,
+              color: cfg.color,
+              borderRadius: 9999,
+              padding: "6px 22px",
+              fontSize: 15,
+              fontWeight: 800,
+              letterSpacing: 0.3,
+              transition: "all 300ms",
+            }}>
+              {cfg.label}
             </div>
-          )
-        ) : (
-          <div className="flex items-center gap-2">
-            <svg width="20" height="20" viewBox="0 0 22 22">
-              <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" />
-              <circle cx="11" cy="11" r="3" fill="#fff" />
-            </svg>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "rgba(255,255,255,0.9)", fontVariantNumeric: "tabular-nums" }}>
-              {mode.tempRange}
-            </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
-
-      {/* Acoustic reasoning */}
-      {result && (
-        <div className="relative z-10 mx-5 mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-          <p className="text-sm leading-6 text-white/70">{result.acoustic_reasoning}</p>
-        </div>
-      )}
 
       {/* Error message */}
       {errorMessage && (
