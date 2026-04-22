@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 
+// ─── Types ────────────────────────────────────────────────────
 type DishPreset = {
   id: string;
+  emoji: string | null;
   name: string;
-  subtitle: string;
-  targetLabel: string;
-  targetTemp: number;
+  target: number;
+  range?: [number, number];
 };
 
 type AnalysisResult = {
@@ -20,359 +21,500 @@ type AnalysisResult = {
 type ScreenState = "select" | "measure";
 type ActivityState = "idle" | "permission" | "listening" | "analyzing" | "error";
 
+// ─── Constants ────────────────────────────────────────────────
 const CHUNK_DURATION_MS = 2000;
+const MIN_T = 140;
+const MAX_T = 220;
 
 const DISHES: DishPreset[] = [
-  {
-    id: "tempura",
-    name: "天ぷら",
-    subtitle: "衣を軽く、サクッと揚げる",
-    targetLabel: "170°C",
-    targetTemp: 170,
-  },
-  {
-    id: "karaage",
-    name: "唐揚げ",
-    subtitle: "香ばしく、ジューシーに仕上げる",
-    targetLabel: "180°C",
-    targetTemp: 180,
-  },
-  {
-    id: "tonkatsu",
-    name: "トンカツ",
-    subtitle: "低めから入り、じっくり火を通す",
-    targetLabel: "160°C",
-    targetTemp: 160,
-  },
+  { id: "karaage",  emoji: "🍗", name: "唐揚げ",         target: 180 },
+  { id: "tempura",  emoji: "🍤", name: "天ぷら",         target: 170 },
+  { id: "tonkatsu", emoji: "🍖", name: "トンカツ",       target: 170, range: [160, 180] },
+  { id: "korokke",  emoji: "🥔", name: "コロッケ",       target: 180 },
+  { id: "fries",    emoji: "🍟", name: "フライドポテト", target: 170 },
+  { id: "custom",   emoji: null, name: "カスタム",       target: 170 },
 ];
 
-const ZONE_META: Record<
-  AnalysisResult["zone"] | "unknown",
-  {
-    color: string;
-    glow: string;
-    label: string;
-    meterTemp: number;
-  }
-> = {
-  unknown: {
-    color: "#f4c35f",
-    glow: "rgba(244, 195, 95, 0.32)",
-    label: "待機中",
-    meterTemp: 160,
-  },
-  ぬるい: {
-    color: "#47a7ff",
-    glow: "rgba(71, 167, 255, 0.28)",
-    label: "ぬるい",
-    meterTemp: 145,
-  },
-  適温: {
-    color: "#6dde88",
-    glow: "rgba(109, 222, 136, 0.3)",
-    label: "適温",
-    meterTemp: 175,
-  },
-  熱すぎ: {
-    color: "#ff6b57",
-    glow: "rgba(255, 107, 87, 0.32)",
-    label: "熱すぎ",
-    meterTemp: 215,
-  },
-};
+// 4-zone color system (blue/green/yellow/red)
+const ZONES = [
+  { from: 140, to: 160, color: "oklch(0.70 0.17 230)" },
+  { from: 160, to: 180, color: "oklch(0.78 0.17 145)" },
+  { from: 180, to: 200, color: "oklch(0.85 0.17 90)"  },
+  { from: 200, to: 220, color: "oklch(0.68 0.19 25)"  },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────
+function colorForTemp(t: number): string {
+  for (const z of ZONES) if (t >= z.from && t < z.to) return z.color;
+  return ZONES[ZONES.length - 1].color;
+}
+
+function tempTint(t: number | null): string {
+  if (!t) return "oklch(0.70 0.02 250)";
+  if (t < 160) return "oklch(0.70 0.17 230)";
+  if (t < 180) return "oklch(0.78 0.17 145)";
+  if (t < 200) return "oklch(0.85 0.17 90)";
+  return "oklch(0.68 0.19 25)";
+}
+
+function tempToAngle(t: number): number {
+  const clamped = Math.max(MIN_T, Math.min(MAX_T, t));
+  return -90 + ((clamped - MIN_T) / (MAX_T - MIN_T)) * 180;
+}
+
+// polar: deg where 0 = up, clockwise
+function polar(cx: number, cy: number, r: number, deg: number) {
+  const rad = (deg - 90) * (Math.PI / 180);
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function arcPath(cx: number, cy: number, r: number, a1: number, a2: number): string {
+  const p1 = polar(cx, cy, r, a1);
+  const p2 = polar(cx, cy, r, a2);
+  const large = a2 - a1 > 180 ? 1 : 0;
+  return `M ${p1.x} ${p1.y} A ${r} ${r} 0 ${large} 1 ${p2.x} ${p2.y}`;
+}
+
+function extractTemp(range: string | undefined, fallback: number): number {
+  if (!range) return fallback;
+  const nums = [...range.matchAll(/\d+/g)].map((m) => Number(m[0])).filter(Number.isFinite);
+  if (!nums.length) return fallback;
+  return Math.round(nums.reduce((s, n) => s + n, 0) / nums.length);
+}
 
 function resolveRecorderMimeType(): string {
-  if (typeof MediaRecorder === "undefined") {
-    return "";
-  }
-
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/mp4",
-  ];
-
-  return (
-    candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? ""
-  );
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  return candidates.find((c) => MediaRecorder.isTypeSupported(c)) ?? "";
 }
 
 function extensionForMimeType(mimeType: string): string {
-  if (mimeType.includes("mp4")) {
-    return "m4a";
-  }
-
-  return "webm";
-}
-
-function extractEstimatedTemp(range: string | undefined, fallback: number): number {
-  if (!range) {
-    return fallback;
-  }
-
-  const matches = [...range.matchAll(/\d+/g)];
-  if (matches.length === 0) {
-    return fallback;
-  }
-
-  const temps = matches
-    .map((match) => Number(match[0]))
-    .filter((temp) => Number.isFinite(temp));
-
-  if (temps.length === 0) {
-    return fallback;
-  }
-
-  const total = temps.reduce((sum, temp) => sum + temp, 0);
-  return Math.round(total / temps.length);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function formatConfidence(value: number | undefined): string {
-  if (typeof value !== "number" || Number.isNaN(value)) {
-    return "--";
-  }
-
-  return `${Math.round(value * 100)}%`;
-}
-
-function buildErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return "判定に失敗しました。もう一度お試しください。";
+  return mimeType.includes("mp4") ? "m4a" : "webm";
 }
 
 async function recordAudioChunk(
   stream: MediaStream,
   durationMs: number,
 ): Promise<{ blob: Blob; mimeType: string }> {
-  if (typeof MediaRecorder === "undefined") {
+  if (typeof MediaRecorder === "undefined")
     throw new Error("このブラウザでは録音に対応していません。");
-  }
-
   const mimeType = resolveRecorderMimeType();
-  const recorder = mimeType
-    ? new MediaRecorder(stream, { mimeType })
-    : new MediaRecorder(stream);
-
+  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
   return new Promise((resolve, reject) => {
     const chunks: Blob[] = [];
-
-    recorder.addEventListener("dataavailable", (event) => {
-      if (event.data.size > 0) {
-        chunks.push(event.data);
-      }
-    });
-
-    recorder.addEventListener("error", () => {
-      reject(new Error("録音処理でエラーが発生しました。"));
-    });
-
+    recorder.addEventListener("dataavailable", (e) => { if (e.data.size > 0) chunks.push(e.data); });
+    recorder.addEventListener("error", () => reject(new Error("録音処理でエラーが発生しました。")));
     recorder.addEventListener("stop", () => {
-      const finalMimeType = recorder.mimeType || mimeType || "audio/webm";
-      resolve({
-        blob: new Blob(chunks, { type: finalMimeType }),
-        mimeType: finalMimeType,
-      });
+      const finalMime = recorder.mimeType || mimeType || "audio/webm";
+      resolve({ blob: new Blob(chunks, { type: finalMime }), mimeType: finalMime });
     });
-
     recorder.start();
-    window.setTimeout(() => {
-      if (recorder.state !== "inactive") {
-        recorder.stop();
-      }
-    }, durationMs);
+    window.setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, durationMs);
   });
 }
 
-async function analyzeAudioChunk(
-  blob: Blob,
-  mimeType: string,
-): Promise<AnalysisResult> {
-  const extension = extensionForMimeType(mimeType);
-  const formData = new FormData();
-  formData.append("audio", blob, `chunk.${extension}`);
-
-  const response = await fetch("/api/analyze", {
-    method: "POST",
-    body: formData,
-  });
-
-  const payload = (await response.json()) as AnalysisResult | { error?: string };
-  if (!response.ok) {
-    throw new Error(
-      "error" in payload && payload.error
-        ? payload.error
-        : "判定APIでエラーが発生しました。",
-    );
-  }
-
+async function analyzeAudioChunk(blob: Blob, mimeType: string): Promise<AnalysisResult> {
+  const ext = extensionForMimeType(mimeType);
+  const fd = new FormData();
+  fd.append("audio", blob, `chunk.${ext}`);
+  const res = await fetch("/api/analyze", { method: "POST", body: fd });
+  const payload = (await res.json()) as AnalysisResult | { error?: string };
+  if (!res.ok) throw new Error("error" in payload && payload.error ? payload.error : "判定APIでエラーが発生しました。");
   return payload as AnalysisResult;
 }
 
-function Meter({
-  targetTemp,
-  result,
-  activity,
-}: {
-  targetTemp: number;
-  result: AnalysisResult | null;
-  activity: ActivityState;
-}) {
-  const zoneKey = result?.zone ?? "unknown";
-  const zoneMeta = ZONE_META[zoneKey];
-  const estimatedTemp = extractEstimatedTemp(result?.estimated_temp_range, targetTemp);
-  const needleTemp = clamp(estimatedTemp, 130, 230);
-  const targetClamped = clamp(targetTemp, 130, 230);
+// ─── UI Components ────────────────────────────────────────────
 
-  const tempToAngle = (temp: number) => -120 + ((temp - 130) / 100) * 240;
-  const targetAngle = tempToAngle(targetClamped);
-  const needleAngle = tempToAngle(needleTemp);
-  const showPulse = activity === "listening" || activity === "analyzing";
-
+function ListeningBars({ active }: { active: boolean }) {
   return (
-    <div className="relative mx-auto flex h-[22rem] w-full max-w-[22rem] items-center justify-center">
-      <div
-        className={`absolute inset-6 rounded-full blur-3xl transition-opacity duration-500 ${
-          showPulse ? "opacity-100" : "opacity-70"
-        }`}
-        style={{ background: zoneMeta.glow }}
-      />
-      <div className="relative flex h-full w-full items-center justify-center">
-        <svg
-          viewBox="0 0 320 320"
-          className="h-full w-full drop-shadow-[0_24px_60px_rgba(0,0,0,0.48)]"
-          aria-hidden="true"
-        >
-          <defs>
-            <linearGradient id="meter-track" x1="0%" x2="100%" y1="0%" y2="100%">
-              <stop offset="0%" stopColor="#2f3745" />
-              <stop offset="100%" stopColor="#151922" />
-            </linearGradient>
-          </defs>
+    <div className="flex items-center gap-1.5 h-8">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <div
+          key={i}
+          className="w-1.5 rounded-full bg-white/85 transition-all"
+          style={{
+            height: 10,
+            animation: active ? `barPulse 1000ms ease-in-out ${i * 120}ms infinite` : "none",
+            opacity: active ? 1 : 0.3,
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes barPulse {
+          0%, 100% { height: 8px; opacity: 0.5; }
+          50%       { height: 28px; opacity: 1; }
+        }
+      `}</style>
+    </div>
+  );
+}
 
-          <path
-            d="M 60 220 A 100 100 0 0 1 260 220"
-            fill="none"
-            stroke="url(#meter-track)"
-            strokeWidth="34"
-            strokeLinecap="round"
+function DeltaIndicator({ temp, target }: { temp: number; target: number }) {
+  const diff = target - temp;
+  const abs = Math.abs(diff);
+  if (abs <= 3) return null;
+  const steps = 5;
+  const proximity = Math.max(0, Math.min(steps, steps - Math.floor(abs / 4)));
+  const isUp = diff > 0;
+  return (
+    <div className="flex items-center justify-center gap-2.5 mt-1">
+      <svg width="28" height="28" viewBox="0 0 28 28" style={{ transform: isUp ? "none" : "rotate(180deg)" }}>
+        <path d="M14 4 L14 22 M6 12 L14 4 L22 12"
+          stroke="rgba(255,255,255,0.85)" strokeWidth="3"
+          fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <div className="flex gap-2">
+        {Array.from({ length: steps }).map((_, i) => (
+          <div
+            key={i}
+            className="w-3 h-3 rounded-full"
+            style={{ background: i < proximity ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.18)" }}
           />
-          <path
-            d="M 90 220 A 70 70 0 0 1 230 220"
-            fill="none"
-            stroke={zoneMeta.color}
-            strokeWidth="18"
-            strokeLinecap="round"
-            strokeDasharray="140 500"
-          />
-
-          {[140, 160, 180, 200, 220].map((temp) => {
-            const angle = tempToAngle(temp);
-            const rad = (angle * Math.PI) / 180;
-            const x1 = 160 + Math.cos(rad) * 84;
-            const y1 = 220 + Math.sin(rad) * 84;
-            const x2 = 160 + Math.cos(rad) * 101;
-            const y2 = 220 + Math.sin(rad) * 101;
-            return (
-              <g key={temp}>
-                <line
-                  x1={x1}
-                  y1={y1}
-                  x2={x2}
-                  y2={y2}
-                  stroke="rgba(255,255,255,0.32)"
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                />
-                <text
-                  x={160 + Math.cos(rad) * 120}
-                  y={220 + Math.sin(rad) * 120}
-                  fill="rgba(255,255,255,0.72)"
-                  fontSize="12"
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                >
-                  {temp}
-                </text>
-              </g>
-            );
-          })}
-
-          <g transform={`rotate(${targetAngle} 160 220)`}>
-            <polygon points="160,88 150,108 170,108" fill="#ffffff" />
-          </g>
-
-          <g transform={`rotate(${needleAngle} 160 220)`}>
-            <rect
-              x="155"
-              y="110"
-              width="10"
-              height="116"
-              rx="5"
-              fill={zoneMeta.color}
-            />
-          </g>
-
-          <circle cx="160" cy="220" r="16" fill="#090c13" />
-          <circle cx="160" cy="220" r="8" fill={zoneMeta.color} />
-        </svg>
-
-        <div className="absolute bottom-8 flex flex-col items-center text-center">
-          <div className="text-xs font-semibold uppercase tracking-[0.35em] text-white/45">
-            LIVE TEMP
-          </div>
-          <div className="mt-2 text-6xl font-black tracking-[-0.06em] text-white">
-            {result?.estimated_temp_range ?? "--"}
-          </div>
-          <div className="mt-3 flex items-center gap-2 rounded-full border border-white/10 bg-white/6 px-4 py-2 text-sm text-white/72">
-            <span
-              className="h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: zoneMeta.color }}
-            />
-            目標 {targetTemp}°C
-          </div>
-        </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function StatusLabel({
-  activity,
-  result,
-}: {
-  activity: ActivityState;
-  result: AnalysisResult | null;
-}) {
-  if (activity === "permission") {
-    return "マイク許可を確認中";
-  }
-
-  if (activity === "listening") {
-    return "油音を拾っています";
-  }
-
-  if (activity === "analyzing") {
-    return "AIが判定中";
-  }
-
-  if (activity === "error") {
-    return "判定ループ停止中";
-  }
-
-  if (result) {
-    return "最新の判定を表示中";
-  }
-
-  return "待機中";
+function OnTargetFlash({ visible }: { visible: boolean }) {
+  return (
+    <div
+      className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center"
+      style={{
+        opacity: visible ? 1 : 0,
+        transition: "opacity 400ms ease-out",
+        background: "radial-gradient(circle at 50% 45%, oklch(0.78 0.17 145 / 0.42), oklch(0.28 0.08 145 / 0.1) 70%)",
+      }}
+    >
+      <svg
+        width="260" height="260" viewBox="0 0 260 260"
+        style={{
+          transform: visible ? "scale(1)" : "scale(0.6)",
+          transition: "transform 500ms cubic-bezier(.2,1.2,.3,1)",
+          filter: "drop-shadow(0 8px 30px oklch(0.78 0.17 145 / 0.9))",
+        }}
+      >
+        <circle cx="130" cy="130" r="110" fill="oklch(0.78 0.17 145)" />
+        <path d="M75 135 L115 175 L190 95"
+          stroke="#0b1a10" strokeWidth="18"
+          fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
 }
 
+function MeterSVG({ temp, target }: { temp: number; target: number }) {
+  const W = 400;
+  const H = 260;
+  const cx = W / 2;
+  const cy = 210;
+  const rTrack = 168;
+  const trackW = 32;
+
+  const needleA = tempToAngle(temp);
+  const tip = polar(cx, cy, rTrack - 6, needleA);
+  const baseL = polar(cx, cy, 12, needleA - 90);
+  const baseR = polar(cx, cy, 12, needleA + 90);
+
+  const targetA = tempToAngle(target);
+  const notchOuterR = rTrack + trackW / 2 + 4;
+  const notchTipR = rTrack + trackW / 2 - 2;
+  const n0 = polar(cx, cy, notchTipR, targetA);
+  const n1 = polar(cx, cy, notchOuterR, targetA - 3);
+  const n2 = polar(cx, cy, notchOuterR, targetA + 3);
+
+  const currentColor = colorForTemp(temp);
+
+  const ticks: React.ReactNode[] = [];
+  for (let t = MIN_T; t <= MAX_T; t += 10) {
+    const a = tempToAngle(t);
+    const isMajor = (t - MIN_T) % 20 === 0;
+    const innerR = rTrack - trackW / 2 - (isMajor ? 14 : 8);
+    const outerR = rTrack - trackW / 2 - 2;
+    const p1 = polar(cx, cy, innerR, a);
+    const p2 = polar(cx, cy, outerR, a);
+    ticks.push(
+      <line key={t} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+        stroke={isMajor ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.18)"}
+        strokeWidth={isMajor ? 2.5 : 1.5} strokeLinecap="round" />
+    );
+  }
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%" }} aria-hidden="true">
+      {/* Base track */}
+      <path d={arcPath(cx, cy, rTrack, -90, 90)}
+        stroke="rgba(255,255,255,0.06)" strokeWidth={trackW}
+        strokeLinecap="butt" fill="none" />
+      {/* Color zones */}
+      {ZONES.map((z, i) => (
+        <path key={i} d={arcPath(cx, cy, rTrack, tempToAngle(z.from), tempToAngle(z.to))}
+          stroke={z.color} strokeWidth={trackW - 6}
+          strokeLinecap="butt" fill="none" opacity={0.92} />
+      ))}
+      {/* Ticks */}
+      {ticks}
+      {/* Target notch */}
+      <polygon points={`${n0.x},${n0.y} ${n1.x},${n1.y} ${n2.x},${n2.y}`} fill="#fff" />
+      {/* Needle */}
+      <g style={{ filter: `drop-shadow(0 2px 8px ${currentColor})`, transition: "filter 220ms linear" }}>
+        <polygon points={`${baseL.x},${baseL.y} ${tip.x},${tip.y} ${baseR.x},${baseR.y}`} fill={currentColor} />
+      </g>
+      {/* Pivot */}
+      <circle cx={cx} cy={cy} r={16} fill="#1a1d24" stroke={currentColor} strokeWidth={3} />
+      <circle cx={cx} cy={cy} r={5} fill={currentColor} />
+    </svg>
+  );
+}
+
+// ─── Screens ──────────────────────────────────────────────────
+
+function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset) => void }) {
+  const [pressed, setPressed] = useState(false);
+  const tint = tempTint(dish.target);
+  const isCustom = dish.id === "custom";
+
+  return (
+    <button
+      type="button"
+      onPointerDown={() => setPressed(true)}
+      onPointerUp={() => setPressed(false)}
+      onPointerLeave={() => setPressed(false)}
+      onClick={() => onPress(dish)}
+      className="relative overflow-hidden flex flex-col items-center justify-between"
+      style={{
+        background: "linear-gradient(180deg, #1a1d24 0%, #15171d 100%)",
+        borderRadius: 22,
+        aspectRatio: "1 / 1.15",
+        padding: "14px 8px 12px",
+        boxShadow: pressed
+          ? `0 0 0 1px ${tint}, inset 0 2px 6px rgba(0,0,0,0.5)`
+          : "0 0 0 1px rgba(255,255,255,0.06), 0 6px 16px rgba(0,0,0,0.4)",
+        transform: pressed ? "scale(0.97)" : "scale(1)",
+        transition: "transform 120ms ease, box-shadow 180ms ease",
+        cursor: "pointer",
+      }}
+    >
+      {/* Zone dot */}
+      <div className="w-full flex justify-end pr-1">
+        {!isCustom && (
+          <div
+            className="w-3 h-3 rounded-full"
+            style={{ background: tint, boxShadow: `0 0 10px ${tint}` }}
+          />
+        )}
+      </div>
+
+      {/* Emoji or custom icon */}
+      <div className="flex-1 flex items-center justify-center" style={{ fontSize: 56, lineHeight: 1, filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.4))" }}>
+        {isCustom ? (
+          <svg width="56" height="56" viewBox="0 0 64 64">
+            <circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="3" strokeDasharray="4 6" />
+            <circle cx="32" cy="32" r="14" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.6)" strokeWidth="2" />
+            <line x1="32" y1="32" x2="48" y2="20" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
+            <circle cx="32" cy="32" r="3" fill="#fff" />
+          </svg>
+        ) : (
+          dish.emoji
+        )}
+      </div>
+
+      {/* Temp */}
+      <div className="flex items-baseline gap-0.5" style={{ fontVariantNumeric: "tabular-nums", color: tint }}>
+        {isCustom ? (
+          <span style={{ fontSize: 28, fontWeight: 700, color: "rgba(255,255,255,0.7)", letterSpacing: -1 }}>···°</span>
+        ) : dish.range ? (
+          <div className="flex items-baseline gap-1">
+            <span style={{ fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{dish.range[0]}</span>
+            <svg width="14" height="12" viewBox="0 0 14 12" style={{ opacity: 0.7 }}>
+              <path d="M1 6 H11 M8 3 L12 6 L8 9" stroke={tint} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span style={{ fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{dish.range[1]}°</span>
+          </div>
+        ) : (
+          <>
+            <span style={{ fontSize: 32, fontWeight: 800, letterSpacing: -1.5 }}>{dish.target}</span>
+            <span style={{ fontSize: 20, fontWeight: 700, opacity: 0.9 }}>°</span>
+          </>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
+  return (
+    <div className="w-full min-h-screen relative overflow-hidden flex flex-col" style={{ background: "#0b0d11", color: "#fff" }}>
+      {/* Ambient gradient */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{ background: "radial-gradient(ellipse 70% 40% at 50% 0%, oklch(0.30 0.04 60 / 0.35), transparent 60%)" }}
+      />
+
+      {/* Header */}
+      <div className="relative z-10 pt-16 px-6 pb-5">
+        <div className="flex items-center gap-2.5 mb-3.5">
+          {/* Steam glyph */}
+          <svg width="22" height="22" viewBox="0 0 24 24">
+            <path d="M8 3 C 8 6, 6 6, 6 9 C 6 11, 8 11, 8 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
+            <path d="M12 3 C 12 6, 10 6, 10 9 C 10 11, 12 11, 12 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
+            <path d="M16 3 C 16 6, 14 6, 14 9 C 14 11, 16 11, 16 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
+          </svg>
+          <span className="text-[13px] font-semibold uppercase tracking-[0.12em] text-white/55">TempuraTune</span>
+        </div>
+        <h1 className="m-0 text-[30px] font-extrabold leading-tight" style={{ letterSpacing: -0.8 }}>
+          今日は何を<br />作る?
+        </h1>
+      </div>
+
+      {/* 2×3 Grid */}
+      <div
+        className="relative z-10 flex-1 grid gap-3 px-4 pb-10"
+        style={{ gridTemplateColumns: "1fr 1fr", alignContent: "start" }}
+      >
+        {DISHES.map((d) => (
+          <DishCard key={d.id} dish={d} onPress={onPick} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MeasureScreen({
+  dish,
+  result,
+  activity,
+  errorMessage,
+  onStop,
+  onRetry,
+}: {
+  dish: DishPreset;
+  result: AnalysisResult | null;
+  activity: ActivityState;
+  errorMessage: string;
+  onStop: () => void;
+  onRetry: () => void;
+}) {
+  const temp = extractTemp(result?.estimated_temp_range, dish.target);
+  const currentColor = colorForTemp(temp);
+  const onTarget = result !== null && Math.abs(temp - dish.target) <= 3;
+  const isActive = activity === "listening" || activity === "analyzing";
+
+  return (
+    <div
+      className="w-full min-h-screen relative overflow-hidden flex flex-col"
+      style={{ background: "#0b0d11", color: "#fff" }}
+    >
+      {/* Zone-tinted glow from top */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: `radial-gradient(ellipse 80% 55% at 50% 18%, ${currentColor} 0%, transparent 60%)`,
+          opacity: 0.14,
+          transition: "background 400ms linear",
+        }}
+      />
+
+      {/* On-target flash */}
+      <OnTargetFlash visible={onTarget} />
+
+      {/* Mic + listening bars */}
+      <div className="relative z-10 flex justify-center items-center gap-3.5 pt-16 pb-2">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+          <rect x="9" y="3" width="6" height="12" rx="3" fill="rgba(255,255,255,0.85)" />
+          <path d="M5 11a7 7 0 0014 0M12 18v3" stroke="rgba(255,255,255,0.85)" strokeWidth="2" strokeLinecap="round" fill="none" />
+        </svg>
+        <ListeningBars active={isActive} />
+      </div>
+
+      {/* Meter + huge temp overlay */}
+      <div className="relative z-10 flex justify-center pt-4">
+        <div className="relative w-full max-w-[400px]">
+          <MeterSVG temp={temp} target={dish.target} />
+          {/* Huge temperature number in dead space */}
+          <div
+            className="absolute left-0 right-0 flex flex-col items-center"
+            style={{ top: "54%" }}
+          >
+            <div
+              style={{
+                fontSize: 100,
+                fontWeight: 800,
+                letterSpacing: -4,
+                lineHeight: 1,
+                fontVariantNumeric: "tabular-nums",
+                color: currentColor,
+                textShadow: `0 0 40px ${currentColor}55`,
+                transition: "color 300ms linear",
+              }}
+            >
+              {result ? Math.round(temp) : "--"}
+              <span style={{ fontSize: 40, fontWeight: 700, marginLeft: 4, verticalAlign: "top", color: "rgba(255,255,255,0.7)" }}>
+                {result ? "°" : ""}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Delta indicator */}
+      <div className="relative z-10 flex justify-center items-center min-h-10 -mt-2">
+        {result && <DeltaIndicator temp={temp} target={dish.target} />}
+      </div>
+
+      {/* Target row */}
+      <div className="relative z-10 flex justify-center items-center gap-2.5 mt-3">
+        <svg width="22" height="22" viewBox="0 0 22 22">
+          <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" />
+          <circle cx="11" cy="11" r="3" fill="#fff" />
+        </svg>
+        <div style={{ fontSize: 28, fontWeight: 700, color: "rgba(255,255,255,0.9)", fontVariantNumeric: "tabular-nums" }}>
+          {dish.range ? `${dish.range[0]}→${dish.range[1]}°` : `${dish.target}°`}
+        </div>
+      </div>
+
+      {/* Error message */}
+      {errorMessage && (
+        <div className="relative z-10 mx-6 mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70 text-center">
+          {errorMessage}
+        </div>
+      )}
+
+      <div className="flex-1" />
+
+      {/* Stop / retry button */}
+      <div className="relative z-10 flex justify-center pb-14">
+        {activity === "error" ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-8 py-4 rounded-full text-base font-bold text-black bg-white"
+            style={{ boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
+          >
+            もう一度はじめる
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onStop}
+            className="flex items-center justify-center"
+            style={{
+              width: 88, height: 88, borderRadius: 9999,
+              background: "transparent",
+              border: "4px solid rgba(255,255,255,0.9)",
+              cursor: "pointer",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div style={{ width: 36, height: 36, borderRadius: 8, background: "oklch(0.68 0.19 25)" }} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main ─────────────────────────────────────────────────────
 export default function Home() {
   const [screen, setScreen] = useState<ScreenState>("select");
   const [activity, setActivity] = useState<ActivityState>("idle");
@@ -380,10 +522,7 @@ export default function Home() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [hasMicSupport] = useState(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-
+    if (typeof window === "undefined") return true;
     return Boolean(
       typeof navigator.mediaDevices?.getUserMedia === "function" &&
         typeof MediaRecorder !== "undefined",
@@ -396,31 +535,21 @@ export default function Home() {
   useEffect(() => {
     return () => {
       loopActiveRef.current = false;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current?.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
   async function runAnalysisLoop(stream: MediaStream) {
     loopActiveRef.current = true;
-
     while (loopActiveRef.current) {
       setActivity("listening");
       const { blob, mimeType } = await recordAudioChunk(stream, CHUNK_DURATION_MS);
-
-      if (!loopActiveRef.current) {
-        break;
-      }
-
+      if (!loopActiveRef.current) break;
       setActivity("analyzing");
-      const nextResult = await analyzeAudioChunk(blob, mimeType);
-
-      if (!loopActiveRef.current) {
-        break;
-      }
-
-      setResult(nextResult);
+      const next = await analyzeAudioChunk(blob, mimeType);
+      if (!loopActiveRef.current) break;
+      setResult(next);
       setErrorMessage("");
-      setActivity("listening");
     }
   }
 
@@ -432,195 +561,46 @@ export default function Home() {
       setErrorMessage("このブラウザではマイク録音に対応していません。");
       return;
     }
-
     setScreen("measure");
     setSelectedDish(dish);
     setResult(null);
     setErrorMessage("");
     setActivity("permission");
-
     try {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current?.getTracks().forEach((t) => t.stop());
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       streamRef.current = stream;
       await runAnalysisLoop(stream);
     } catch (error) {
       loopActiveRef.current = false;
       setActivity("error");
-      setErrorMessage(buildErrorMessage(error));
+      setErrorMessage(error instanceof Error ? error.message : "判定に失敗しました。");
     }
   }
 
   function stopMeasurement() {
     loopActiveRef.current = false;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     setActivity("idle");
     setScreen("select");
     setErrorMessage("");
   }
 
-  async function retryMeasurement() {
-    if (!selectedDish) {
-      return;
-    }
-
-    await startMeasurement(selectedDish);
-  }
-
-  const zoneKey = result?.zone ?? "unknown";
-  const zoneMeta = ZONE_META[zoneKey];
-
   if (screen === "select") {
-    return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top,#263042_0%,#141821_40%,#090b11_100%)] px-5 py-8 text-white">
-        <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-md flex-col justify-between">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs font-semibold uppercase tracking-[0.28em] text-white/70">
-              TempuraTune
-            </div>
-            <h1 className="mt-6 text-5xl font-black tracking-[-0.08em] text-white">
-              油音で、
-              <br />
-              温度を聴く。
-            </h1>
-            <p className="mt-4 max-w-sm text-base leading-7 text-white/66">
-              キッチンにスマホを置いたまま、2秒ごとに油音を解析します。まずは料理を選んで、目標温度をセットしてください。
-            </p>
-          </div>
-
-          <section className="mt-10 space-y-4">
-            {DISHES.map((dish) => (
-              <button
-                key={dish.id}
-                type="button"
-                onClick={() => void startMeasurement(dish)}
-                className="group flex w-full items-center justify-between rounded-[2rem] border border-white/10 bg-white/6 px-5 py-5 text-left transition hover:border-white/25 hover:bg-white/10"
-              >
-                <div>
-                  <div className="text-2xl font-bold tracking-[-0.05em] text-white">
-                    {dish.name}
-                  </div>
-                  <div className="mt-1 text-sm text-white/60">{dish.subtitle}</div>
-                </div>
-                <div className="rounded-full border border-white/12 bg-black/20 px-4 py-2 text-sm font-semibold text-white/82">
-                  {dish.targetLabel}
-                </div>
-              </button>
-            ))}
-          </section>
-
-          <div className="mt-10 rounded-[2rem] border border-white/10 bg-black/20 p-5">
-            <div className="text-xs font-semibold uppercase tracking-[0.28em] text-white/42">
-              MVP FLOW
-            </div>
-            <div className="mt-3 text-sm leading-7 text-white/70">
-              料理選択 → マイク許可 → 2秒録音 → AI判定 → メーター更新
-            </div>
-          </div>
-        </div>
-      </main>
-    );
+    return <SelectScreen onPick={(d) => void startMeasurement(d)} />;
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,#1f2531_0%,#0b0d13_55%,#06070b_100%)] px-4 py-5 text-white">
-      <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] max-w-md flex-col rounded-[2.3rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.09),rgba(255,255,255,0.02))] p-5 shadow-[0_25px_90px_rgba(0,0,0,0.5)] backdrop-blur">
-        <div className="flex items-center justify-between">
-          <button
-            type="button"
-            onClick={stopMeasurement}
-            className="rounded-full border border-white/12 bg-white/6 px-4 py-2 text-sm font-medium text-white/72 transition hover:bg-white/10"
-          >
-            戻る
-          </button>
-          <div className="rounded-full border border-white/12 bg-black/25 px-4 py-2 text-sm font-semibold text-white/78">
-            {selectedDish?.name ?? "未選択"} · {selectedDish?.targetLabel ?? "--"}
-          </div>
-        </div>
-
-        <div className="mt-5 rounded-[2rem] border border-white/10 bg-black/30 px-4 py-3">
-          <div className="text-xs font-semibold uppercase tracking-[0.3em] text-white/42">
-            STATUS
-          </div>
-          <div className="mt-2 flex items-center gap-3">
-            <span
-              className={`h-3 w-3 rounded-full ${
-                activity === "listening" || activity === "analyzing"
-                  ? "animate-pulse"
-                  : ""
-              }`}
-              style={{ backgroundColor: zoneMeta.color }}
-            />
-            <span className="text-sm text-white/80">
-              <StatusLabel activity={activity} result={result} />
-            </span>
-          </div>
-        </div>
-
-        <div className="mt-6">
-          <Meter
-            targetTemp={selectedDish?.targetTemp ?? 170}
-            result={result}
-            activity={activity}
-          />
-        </div>
-
-        <div className="mt-2 grid grid-cols-2 gap-3">
-          <div className="rounded-[1.6rem] border border-white/10 bg-black/24 p-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.28em] text-white/42">
-              ZONE
-            </div>
-            <div
-              className="mt-3 text-2xl font-black tracking-[-0.06em]"
-              style={{ color: zoneMeta.color }}
-            >
-              {zoneMeta.label}
-            </div>
-          </div>
-          <div className="rounded-[1.6rem] border border-white/10 bg-black/24 p-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.28em] text-white/42">
-              CONFIDENCE
-            </div>
-            <div className="mt-3 text-2xl font-black tracking-[-0.06em] text-white">
-              {formatConfidence(result?.confidence)}
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-3 rounded-[1.8rem] border border-white/10 bg-black/24 p-5">
-          <div className="text-xs font-semibold uppercase tracking-[0.28em] text-white/42">
-            ADVICE
-          </div>
-          <p className="mt-3 text-base leading-7 text-white/78">
-            {errorMessage ||
-              result?.advice ||
-              "録音を開始すると、ここに最新の一手が表示されます。"}
-          </p>
-        </div>
-
-        <div className="mt-auto pt-5">
-          {activity === "error" ? (
-            <button
-              type="button"
-              onClick={() => void retryMeasurement()}
-              className="w-full rounded-[1.6rem] bg-white px-5 py-4 text-base font-bold text-black transition hover:bg-white/90"
-            >
-              もう一度はじめる
-            </button>
-          ) : (
-            <div className="rounded-[1.6rem] border border-white/10 bg-white/6 px-5 py-4 text-center text-sm leading-6 text-white/68">
-              2秒ごとに油音を切り出して判定しています。キッチン台にスマホを置いたまま、音の変化を見守ってください。
-            </div>
-          )}
-        </div>
-      </div>
-    </main>
+    <MeasureScreen
+      dish={selectedDish!}
+      result={result}
+      activity={activity}
+      errorMessage={errorMessage}
+      onStop={stopMeasurement}
+      onRetry={() => selectedDish && void startMeasurement(selectedDish)}
+    />
   );
 }
