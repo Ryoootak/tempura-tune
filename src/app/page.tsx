@@ -3,18 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 
 // ─── Types ────────────────────────────────────────────────────
-type DishPreset = {
-  id: string;
-  emoji: string | null;
-  name: string;
-  target: number;
-  range?: [number, number];
+type TargetMode = {
+  id: "low" | "medium" | "high";
+  emoji: string;
+  label: string;
+  sublabel: string;
+  tempRange: string;
+  targetTemp: number;
 };
 
 type AnalysisResult = {
-  zone: "低い" | "適温" | "高い";
-  estimated_temp_range: string;
-  confidence: number;
+  current_zone: "TOO_LOW" | "LOW" | "MEDIUM" | "HIGH" | "TOO_HIGH";
+  estimated_temp: number;
+  judgment: "UNDER" | "PERFECT" | "OVER";
   advice: string;
 };
 
@@ -26,41 +27,30 @@ const CHUNK_DURATION_MS = 2000;
 const MIN_T = 140;
 const MAX_T = 220;
 
-const DISHES: DishPreset[] = [
-  { id: "karaage",  emoji: "🍗", name: "唐揚げ",         target: 180 },
-  { id: "tempura",  emoji: "🍤", name: "天ぷら",         target: 170 },
-  { id: "tonkatsu", emoji: "🍖", name: "トンカツ",       target: 170, range: [160, 180] },
-  { id: "korokke",  emoji: "🥔", name: "コロッケ",       target: 180 },
-  { id: "fries",    emoji: "🍟", name: "フライドポテト", target: 170 },
-  { id: "custom",   emoji: null, name: "カスタム",       target: 170 },
+const MODES: TargetMode[] = [
+  { id: "low",    emoji: "🥬", label: "低温",  sublabel: "野菜・ポテト",       tempRange: "155–165°C", targetTemp: 160 },
+  { id: "medium", emoji: "🍗", label: "中温",  sublabel: "唐揚げ・トンカツ",    tempRange: "165–180°C", targetTemp: 172 },
+  { id: "high",   emoji: "🍤", label: "高温",  sublabel: "天ぷら・魚介",       tempRange: "180–195°C", targetTemp: 187 },
 ];
 
-// ─── Zone helpers (target-relative) ───────────────────────────
-const ZONE_MARGIN = 10; // ±10°C from target = 適温
+// 5 fixed temperature zones
+const ZONE_DEFS = [
+  { id: "TOO_LOW",  from: MIN_T, to: 155,   color: "oklch(0.60 0.08 240)" },
+  { id: "LOW",      from: 155,   to: 165,   color: "oklch(0.72 0.17 230)" },
+  { id: "MEDIUM",   from: 165,   to: 180,   color: "oklch(0.78 0.17 145)" },
+  { id: "HIGH",     from: 180,   to: 195,   color: "oklch(0.83 0.16 55)"  },
+  { id: "TOO_HIGH", from: 195,   to: MAX_T, color: "oklch(0.68 0.19 25)"  },
+] as const;
 
-function buildMeterZones(target: number) {
-  const lo = Math.max(MIN_T, target - ZONE_MARGIN);
-  const hi = Math.min(MAX_T, target + ZONE_MARGIN);
-  return [
-    { from: MIN_T, to: lo,   color: "oklch(0.70 0.17 230)" }, // 低い — blue
-    { from: lo,   to: hi,   color: "oklch(0.78 0.17 145)" }, // 適温 — green
-    { from: hi,   to: MAX_T, color: "oklch(0.68 0.19 25)"  }, // 高い — red
-  ];
-}
+const ZONE_FOR_MODE: Record<"low" | "medium" | "high", AnalysisResult["current_zone"]> = {
+  low: "LOW",
+  medium: "MEDIUM",
+  high: "HIGH",
+};
 
-function colorForTargetTemp(t: number, target: number): string {
-  const zones = buildMeterZones(target);
-  for (const z of zones) if (t >= z.from && t < z.to) return z.color;
-  return zones[zones.length - 1].color;
-}
-
-// DishCard uses absolute scale (independent of any selected target)
-function tempTint(t: number | null): string {
-  if (!t) return "oklch(0.70 0.02 250)";
-  if (t < 160) return "oklch(0.70 0.17 230)";
-  if (t < 180) return "oklch(0.78 0.17 145)";
-  if (t < 200) return "oklch(0.85 0.17 90)";
-  return "oklch(0.68 0.19 25)";
+function colorForZone(zone: string): string {
+  const def = ZONE_DEFS.find((z) => z.id === zone);
+  return def?.color ?? "rgba(255,255,255,0.5)";
 }
 
 // ─── Geometry helpers ─────────────────────────────────────────
@@ -79,13 +69,6 @@ function arcPath(cx: number, cy: number, r: number, a1: number, a2: number): str
   const p2 = polar(cx, cy, r, a2);
   const large = a2 - a1 > 180 ? 1 : 0;
   return `M ${p1.x} ${p1.y} A ${r} ${r} 0 ${large} 1 ${p2.x} ${p2.y}`;
-}
-
-function extractTemp(range: string | undefined, fallback: number): number {
-  if (!range) return fallback;
-  const nums = [...range.matchAll(/\d+/g)].map((m) => Number(m[0])).filter(Number.isFinite);
-  if (!nums.length) return fallback;
-  return Math.round(nums.reduce((s, n) => s + n, 0) / nums.length);
 }
 
 // ─── MediaRecorder helpers ────────────────────────────────────
@@ -107,12 +90,10 @@ async function recordAudioChunk(
     throw new Error("このブラウザでは録音に対応していません。");
 
   const mimeType = resolveRecorderMimeType();
-
   let recorder: MediaRecorder;
   try {
     recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
   } catch {
-    // mimeType rejected at construction — fall back to browser default
     recorder = new MediaRecorder(stream);
   }
 
@@ -128,7 +109,6 @@ async function recordAudioChunk(
     try {
       recorder.start();
     } catch {
-      // start() failed (e.g. iOS quirk) — reject cleanly
       reject(new Error("録音を開始できませんでした。マイクの設定を確認してください。"));
     }
 
@@ -141,12 +121,12 @@ async function recordAudioChunk(
 async function analyzeAudioChunk(
   blob: Blob,
   mimeType: string,
-  target: number,
+  mode: "low" | "medium" | "high",
 ): Promise<AnalysisResult> {
   const ext = extensionForMimeType(mimeType);
   const fd = new FormData();
   fd.append("audio", blob, `chunk.${ext}`);
-  fd.append("target", String(target));
+  fd.append("mode", mode);
   const res = await fetch("/api/analyze", { method: "POST", body: fd });
   const payload = (await res.json()) as AnalysisResult | { error?: string };
   if (!res.ok) throw new Error("error" in payload && payload.error ? payload.error : "判定APIでエラーが発生しました。");
@@ -180,33 +160,6 @@ function ListeningBars({ active }: { active: boolean }) {
   );
 }
 
-function DeltaIndicator({ temp, target }: { temp: number; target: number }) {
-  const diff = target - temp;
-  const abs = Math.abs(diff);
-  if (abs <= ZONE_MARGIN) return null;
-  const steps = 5;
-  const proximity = Math.max(0, Math.min(steps, steps - Math.floor(abs / 4)));
-  const isUp = diff > 0;
-  return (
-    <div className="flex items-center justify-center gap-2.5 mt-1">
-      <svg width="28" height="28" viewBox="0 0 28 28" style={{ transform: isUp ? "none" : "rotate(180deg)" }}>
-        <path d="M14 4 L14 22 M6 12 L14 4 L22 12"
-          stroke="rgba(255,255,255,0.85)" strokeWidth="3"
-          fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      <div className="flex gap-2">
-        {Array.from({ length: steps }).map((_, i) => (
-          <div
-            key={i}
-            className="w-3 h-3 rounded-full"
-            style={{ background: i < proximity ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.18)" }}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function OnTargetFlash({ visible }: { visible: boolean }) {
   return (
     <div
@@ -234,7 +187,7 @@ function OnTargetFlash({ visible }: { visible: boolean }) {
   );
 }
 
-function MeterSVG({ temp, target }: { temp: number; target: number }) {
+function MeterSVG({ temp, targetTemp, currentZone }: { temp: number; targetTemp: number; currentZone: string }) {
   const W = 400;
   const H = 260;
   const cx = W / 2;
@@ -242,22 +195,21 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
   const rTrack = 168;
   const trackW = 32;
 
-  const zones = buildMeterZones(target);
   const needleA = tempToAngle(temp);
   const tip = polar(cx, cy, rTrack - 6, needleA);
   const baseL = polar(cx, cy, 12, needleA - 90);
   const baseR = polar(cx, cy, 12, needleA + 90);
 
-  const targetA = tempToAngle(target);
+  const targetA = tempToAngle(targetTemp);
   const notchOuterR = rTrack + trackW / 2 + 4;
   const notchTipR = rTrack + trackW / 2 - 2;
   const n0 = polar(cx, cy, notchTipR, targetA);
   const n1 = polar(cx, cy, notchOuterR, targetA - 3);
   const n2 = polar(cx, cy, notchOuterR, targetA + 3);
 
-  const currentColor = colorForTargetTemp(temp, target);
+  const currentColor = colorForZone(currentZone);
 
-  const ticks: React.ReactNode[] = [];
+  const ticks = [];
   for (let t = MIN_T; t <= MAX_T; t += 10) {
     const a = tempToAngle(t);
     const isMajor = (t - MIN_T) % 20 === 0;
@@ -277,7 +229,7 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
       <path d={arcPath(cx, cy, rTrack, -90, 90)}
         stroke="rgba(255,255,255,0.06)" strokeWidth={trackW}
         strokeLinecap="butt" fill="none" />
-      {zones.map((z, i) => (
+      {ZONE_DEFS.map((z, i) => (
         <path key={i} d={arcPath(cx, cy, rTrack, tempToAngle(z.from), tempToAngle(z.to))}
           stroke={z.color} strokeWidth={trackW - 6}
           strokeLinecap="butt" fill="none" opacity={0.92} />
@@ -295,10 +247,9 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
 
 // ─── Screens ──────────────────────────────────────────────────
 
-function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset) => void }) {
+function ModeCard({ mode, onPress }: { mode: TargetMode; onPress: (m: TargetMode) => void }) {
   const [pressed, setPressed] = useState(false);
-  const tint = tempTint(dish.target);
-  const isCustom = dish.id === "custom";
+  const color = colorForZone(ZONE_FOR_MODE[mode.id]);
 
   return (
     <button
@@ -306,59 +257,39 @@ function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset
       onPointerDown={() => setPressed(true)}
       onPointerUp={() => setPressed(false)}
       onPointerLeave={() => setPressed(false)}
-      onClick={() => onPress(dish)}
-      className="relative overflow-hidden flex flex-col items-center justify-between"
+      onClick={() => onPress(mode)}
+      className="relative overflow-hidden flex items-center gap-4 w-full"
       style={{
-        background: "linear-gradient(180deg, #1a1d24 0%, #15171d 100%)",
+        background: "linear-gradient(135deg, #1a1d24 0%, #15171d 100%)",
         borderRadius: 18,
-        aspectRatio: "1 / 1",
-        padding: "10px 6px 8px",
+        padding: "16px 20px",
         boxShadow: pressed
-          ? `0 0 0 1px ${tint}, inset 0 2px 6px rgba(0,0,0,0.5)`
+          ? `0 0 0 1.5px ${color}, inset 0 2px 6px rgba(0,0,0,0.5)`
           : "0 0 0 1px rgba(255,255,255,0.06), 0 6px 16px rgba(0,0,0,0.4)",
-        transform: pressed ? "scale(0.97)" : "scale(1)",
+        transform: pressed ? "scale(0.98)" : "scale(1)",
         transition: "transform 120ms ease, box-shadow 180ms ease",
         cursor: "pointer",
+        textAlign: "left",
       }}
     >
-      <div className="w-full flex justify-end pr-1">
-        {!isCustom && (
-          <div className="w-3 h-3 rounded-full" style={{ background: tint, boxShadow: `0 0 10px ${tint}` }} />
-        )}
+      <div style={{ fontSize: 40, lineHeight: 1, flexShrink: 0, filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.4))" }}>
+        {mode.emoji}
       </div>
-      <div className="flex-1 flex items-center justify-center" style={{ fontSize: 44, lineHeight: 1, filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.4))" }}>
-        {isCustom ? (
-          <svg width="44" height="44" viewBox="0 0 64 64">
-            <circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="3" strokeDasharray="4 6" />
-            <circle cx="32" cy="32" r="14" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.6)" strokeWidth="2" />
-            <line x1="32" y1="32" x2="48" y2="20" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
-            <circle cx="32" cy="32" r="3" fill="#fff" />
-          </svg>
-        ) : dish.emoji}
+      <div className="flex-1 min-w-0">
+        <div style={{ fontSize: 20, fontWeight: 800, color: "#fff", letterSpacing: -0.5 }}>{mode.label}</div>
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{mode.sublabel}</div>
       </div>
-      <div className="flex items-baseline gap-0.5" style={{ fontVariantNumeric: "tabular-nums", color: tint }}>
-        {isCustom ? (
-          <span style={{ fontSize: 28, fontWeight: 700, color: "rgba(255,255,255,0.7)", letterSpacing: -1 }}>···°</span>
-        ) : dish.range ? (
-          <div className="flex items-baseline gap-1">
-            <span style={{ fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{dish.range[0]}</span>
-            <svg width="14" height="12" viewBox="0 0 14 12" style={{ opacity: 0.7 }}>
-              <path d="M1 6 H11 M8 3 L12 6 L8 9" stroke={tint} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <span style={{ fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{dish.range[1]}°</span>
-          </div>
-        ) : (
-          <>
-            <span style={{ fontSize: 32, fontWeight: 800, letterSpacing: -1.5 }}>{dish.target}</span>
-            <span style={{ fontSize: 20, fontWeight: 700, opacity: 0.9 }}>°</span>
-          </>
-        )}
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        <div style={{ fontSize: 15, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{mode.tempRange}</div>
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M7 4 L13 10 L7 16" stroke="rgba(255,255,255,0.35)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </div>
     </button>
   );
 }
 
-function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
+function SelectScreen({ onPick }: { onPick: (m: TargetMode) => void }) {
   return (
     <div className="w-full min-h-screen relative overflow-hidden flex flex-col" style={{ background: "#0b0d11", color: "#fff" }}>
       <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(ellipse 70% 40% at 50% 0%, oklch(0.30 0.04 60 / 0.35), transparent 60%)" }} />
@@ -372,15 +303,15 @@ function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
           <span className="text-[12px] font-semibold uppercase tracking-[0.12em] text-white/55">TempuraTune</span>
         </div>
         <h1 className="m-0 text-[26px] font-extrabold leading-tight" style={{ letterSpacing: -0.8 }}>
-          今日は何を<br />作る?
+          今日は何を<br />揚げる?
         </h1>
         <p className="mt-2 text-sm leading-5 text-white/55 max-w-xs">
           キッチンにスマホを置いたまま、2秒ごとに油音を解析します。まずは料理を選んで、目標温度をセットしてください。
         </p>
       </div>
-      <div className="relative z-10 flex-1 grid gap-2 px-4 pb-4" style={{ gridTemplateColumns: "1fr 1fr", alignContent: "start" }}>
-        {DISHES.map((d) => (
-          <DishCard key={d.id} dish={d} onPress={onPick} />
+      <div className="relative z-10 flex flex-col gap-3 px-4 pb-4">
+        {MODES.map((m) => (
+          <ModeCard key={m.id} mode={m} onPress={onPick} />
         ))}
       </div>
     </div>
@@ -388,7 +319,7 @@ function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
 }
 
 function MeasureScreen({
-  dish,
+  mode,
   result,
   activity,
   errorMessage,
@@ -398,7 +329,7 @@ function MeasureScreen({
   onResume,
   onRetry,
 }: {
-  dish: DishPreset;
+  mode: TargetMode;
   result: AnalysisResult | null;
   activity: ActivityState;
   errorMessage: string;
@@ -408,9 +339,10 @@ function MeasureScreen({
   onResume: () => void;
   onRetry: () => void;
 }) {
-  const temp = extractTemp(result?.estimated_temp_range, dish.target);
-  const currentColor = colorForTargetTemp(temp, dish.target);
-  const onTarget = result !== null && Math.abs(temp - dish.target) <= ZONE_MARGIN;
+  const currentZone = result?.current_zone ?? ZONE_FOR_MODE[mode.id];
+  const temp = result?.estimated_temp ?? mode.targetTemp;
+  const currentColor = colorForZone(currentZone);
+  const onTarget = result?.judgment === "PERFECT";
   const isActive = activity === "listening" || activity === "analyzing" || activity === "permission";
   const isIdle = activity === "idle";
   const isPaused = activity === "paused";
@@ -442,10 +374,7 @@ function MeasureScreen({
           戻る
         </button>
         <div className="flex items-center gap-3">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <rect x="9" y="3" width="6" height="12" rx="3" fill="rgba(255,255,255,0.85)" />
-            <path d="M5 11a7 7 0 0014 0M12 18v3" stroke="rgba(255,255,255,0.85)" strokeWidth="2" strokeLinecap="round" fill="none" />
-          </svg>
+          <span className="text-sm text-white/55">{mode.emoji} {mode.label}</span>
           <ListeningBars active={isActive} />
         </div>
       </div>
@@ -453,7 +382,7 @@ function MeasureScreen({
       {/* Meter */}
       <div className="relative z-10 flex justify-center pt-2">
         <div className="relative w-full max-w-[400px]">
-          <MeterSVG temp={temp} target={dish.target} />
+          <MeterSVG temp={temp} targetTemp={mode.targetTemp} currentZone={currentZone} />
           <div className="absolute left-0 right-0 flex flex-col items-center" style={{ top: "54%" }}>
             <div
               style={{
@@ -468,7 +397,7 @@ function MeasureScreen({
                 opacity: isIdle || isPaused ? 0.4 : 1,
               }}
             >
-              {result ? Math.round(temp) : "--"}
+              {result ? result.estimated_temp : "--"}
               <span style={{ fontSize: 40, fontWeight: 700, marginLeft: 4, verticalAlign: "top", color: "rgba(255,255,255,0.7)" }}>
                 {result ? "°" : ""}
               </span>
@@ -477,41 +406,38 @@ function MeasureScreen({
         </div>
       </div>
 
-      {/* Delta indicator */}
-      <div className="relative z-10 flex justify-center items-center min-h-8 -mt-2">
-        {result && isActive && <DeltaIndicator temp={temp} target={dish.target} />}
-      </div>
-
-      {/* Target row */}
-      <div className="relative z-10 flex justify-center items-center gap-2.5 mt-2">
-        <svg width="20" height="20" viewBox="0 0 22 22">
-          <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" />
-          <circle cx="11" cy="11" r="3" fill="#fff" />
-        </svg>
-        <div style={{ fontSize: 26, fontWeight: 700, color: "rgba(255,255,255,0.9)", fontVariantNumeric: "tabular-nums" }}>
-          {dish.range ? `${dish.range[0]}→${dish.range[1]}°` : `${dish.target}°`}
-        </div>
+      {/* Judgment / target row */}
+      <div className="relative z-10 flex justify-center items-center gap-2.5 mt-1">
+        {result ? (
+          result.judgment === "PERFECT" ? (
+            <div style={{ fontSize: 16, fontWeight: 700, color: "oklch(0.78 0.17 145)" }}>適温 ✓</div>
+          ) : (
+            <div className="flex items-center gap-2" style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontWeight: 600 }}>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                style={{ transform: result.judgment === "UNDER" ? "none" : "rotate(180deg)" }}
+              >
+                <path d="M10 3 L10 16 M4 8 L10 3 L16 8" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>{result.judgment === "UNDER" ? "温度を上げて" : "温度を下げて"}</span>
+            </div>
+          )
+        ) : (
+          <div className="flex items-center gap-2">
+            <svg width="20" height="20" viewBox="0 0 22 22">
+              <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" />
+              <circle cx="11" cy="11" r="3" fill="#fff" />
+            </svg>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "rgba(255,255,255,0.9)", fontVariantNumeric: "tabular-nums" }}>
+              {mode.tempRange}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Advice */}
       {result && (
         <div className="relative z-10 mx-5 mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
           <p className="text-sm leading-6 text-white/70">{result.advice}</p>
-        </div>
-      )}
-
-      {/* Confidence bar */}
-      {result && (
-        <div className="relative z-10 mx-5 mt-2 flex items-center gap-3">
-          <div className="h-1.5 flex-1 rounded-full bg-white/10 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{ width: `${Math.round(result.confidence * 100)}%`, background: currentColor }}
-            />
-          </div>
-          <span className="text-xs text-white/40 tabular-nums w-8 text-right">
-            {Math.round(result.confidence * 100)}%
-          </span>
         </div>
       )}
 
@@ -550,13 +476,11 @@ function MeasureScreen({
             }}
           >
             {isActive ? (
-              // Pause ⏸
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
                 <rect x="6" y="5" width="6" height="18" rx="2" fill="rgba(255,255,255,0.85)" />
                 <rect x="16" y="5" width="6" height="18" rx="2" fill="rgba(255,255,255,0.85)" />
               </svg>
             ) : (
-              // Play ▶ (idle or paused)
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
                 <path d="M9 5 L23 14 L9 23 Z" fill="rgba(255,255,255,0.85)" />
               </svg>
@@ -572,7 +496,7 @@ function MeasureScreen({
 export default function Home() {
   const [screen, setScreen] = useState<ScreenState>("select");
   const [activity, setActivity] = useState<ActivityState>("idle");
-  const [selectedDish, setSelectedDish] = useState<DishPreset | null>(null);
+  const [selectedMode, setSelectedMode] = useState<TargetMode | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [hasMicSupport] = useState(() => {
@@ -594,8 +518,7 @@ export default function Home() {
     };
   }, []);
 
-  // Overlap: fire API in background, immediately continue to next recording
-  async function runAnalysisLoop(stream: MediaStream, target: number) {
+  async function runAnalysisLoop(stream: MediaStream, mode: "low" | "medium" | "high") {
     loopActiveRef.current = true;
     pendingCallRef.current = false;
     let consecutiveErrors = 0;
@@ -607,10 +530,9 @@ export default function Home() {
         const { blob, mimeType } = await recordAudioChunk(stream, CHUNK_DURATION_MS);
         if (!loopActiveRef.current) break;
 
-        // Fire API call without awaiting — overlap with next recording
         if (!pendingCallRef.current) {
           pendingCallRef.current = true;
-          analyzeAudioChunk(blob, mimeType, target)
+          analyzeAudioChunk(blob, mimeType, mode)
             .then((next) => {
               pendingCallRef.current = false;
               if (!loopActiveRef.current) return;
@@ -628,7 +550,6 @@ export default function Home() {
               }
             });
         }
-        // Loop continues immediately → next recording
       } catch (error) {
         consecutiveErrors++;
         if (consecutiveErrors >= MAX_ERRORS) {
@@ -641,16 +562,15 @@ export default function Home() {
     }
   }
 
-  // Navigate to Screen 2 without starting — user presses ▶ manually
-  function selectDish(dish: DishPreset) {
+  function selectMode(mode: TargetMode) {
     setScreen("measure");
-    setSelectedDish(dish);
+    setSelectedMode(mode);
     setResult(null);
     setErrorMessage("");
     setActivity("idle");
   }
 
-  async function startRecording(dish: DishPreset) {
+  async function startRecording(mode: TargetMode) {
     if (!hasMicSupport) {
       setActivity("error");
       setErrorMessage("このブラウザではマイク録音に対応していません。");
@@ -663,7 +583,7 @@ export default function Home() {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       streamRef.current = stream;
-      await runAnalysisLoop(stream, dish.target);
+      await runAnalysisLoop(stream, mode.id);
     } catch (error) {
       loopActiveRef.current = false;
       setActivity("error");
@@ -680,9 +600,9 @@ export default function Home() {
   }
 
   async function resumeMeasurement() {
-    if (!selectedDish) return;
+    if (!selectedMode) return;
     setErrorMessage("");
-    await startRecording(selectedDish);
+    await startRecording(selectedMode);
   }
 
   function goBack() {
@@ -697,20 +617,20 @@ export default function Home() {
   }
 
   if (screen === "select") {
-    return <SelectScreen onPick={selectDish} />;
+    return <SelectScreen onPick={selectMode} />;
   }
 
   return (
     <MeasureScreen
-      dish={selectedDish!}
+      mode={selectedMode!}
       result={result}
       activity={activity}
       errorMessage={errorMessage}
       onBack={goBack}
-      onStart={() => selectedDish && void startRecording(selectedDish)}
+      onStart={() => selectedMode && void startRecording(selectedMode)}
       onPause={pauseMeasurement}
       onResume={() => void resumeMeasurement()}
-      onRetry={() => selectedDish && void startRecording(selectedDish)}
+      onRetry={() => selectedMode && void startRecording(selectedMode)}
     />
   );
 }

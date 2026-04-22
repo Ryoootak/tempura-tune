@@ -14,57 +14,69 @@ const SUPPORTED_AUDIO_TYPES = new Map<string, string>([
 const ANALYSIS_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
-    zone: {
+    current_zone: {
       type: "string",
-      enum: ["低い", "適温", "高い"],
-      description: "目標温度に対する油温ゾーン。",
+      enum: ["TOO_LOW", "LOW", "MEDIUM", "HIGH", "TOO_HIGH"],
+      description: "5-zone oil temperature classification based on sound.",
     },
-    estimated_temp_range: {
-      type: "string",
-      description: "推定温度帯。例: 170-180℃",
-    },
-    confidence: {
+    estimated_temp: {
       type: "number",
-      description: "0から1の確信度。",
+      description: "Estimated oil temperature in °C as an integer (e.g. 170).",
+    },
+    judgment: {
+      type: "string",
+      enum: ["UNDER", "PERFECT", "OVER"],
+      description: "Whether the current zone is below, matching, or above the user's target.",
     },
     advice: {
       type: "string",
-      description: "天ぷら職人風の短い助言。",
+      description: "Short punchy English feedback with emoji. e.g. 'Perfect! 🍤' or 'Lower the heat! 🚩'",
     },
   },
-  required: ["zone", "estimated_temp_range", "confidence", "advice"],
+  required: ["current_zone", "estimated_temp", "judgment", "advice"],
 } as const;
 
-function buildSystemPrompt(target: number): string {
-  const lo = target - 10;
-  const hi = target + 10;
-  return `あなたは「TempuraTune」という油温判定アプリのAIです。
-日本の天ぷら職人の技を再現する役割を持ちます。
+type TargetMode = "low" | "medium" | "high";
 
-ユーザーが油に濡れた箸を入れた時の音を録音して送ってきます。
-今回の目標温度: ${target}℃
+const MODE_DESCRIPTIONS: Record<TargetMode, string> = {
+  low:    "LOW zone (155–165°C) — veggies and potatoes (🥬)",
+  medium: "MEDIUM zone (165–180°C) — chicken karaage and tonkatsu (🍗)",
+  high:   "HIGH zone (180–195°C) — tempura and seafood (🍤)",
+};
 
-その音から、目標温度に対して3つのゾーンに分類してください:
+function buildSystemPrompt(mode: TargetMode): string {
+  return `You are the AI engine for "TempuraTune", a smart frying temperature app.
+The user sends a 2-second audio recording of hot oil.
+Classify the oil temperature based on sound characteristics: pitch, bubble density, and intensity.
 
-- 低い (${lo}℃以下): 目標より低い。泡が少なく静か。まだ加熱が必要。
-- 適温 (${lo}〜${hi}℃): 目標温度付近。安定した泡の音。揚げ始めに最適。
-- 高い (${hi}℃以上): 目標を超えている。激しい泡・破裂音。火を弱めてください。
+## 5 Temperature Zones
 
-判定根拠:
-- バブルの大きさと数（高温ほど大きく多い）
-- 音の高周波成分（高温ほど高音域が増える）
-- 音の鋭さ・破裂感（高温ほど鋭い）
+- TOO_LOW  — below 155°C:  Very quiet, almost silent. Weak or no bubbling.
+- LOW      — 155–165°C:    Calm, light crackling. Gentle bubbles.
+- MEDIUM   — 165–180°C:    Standard rhythmic frying sound. Steady bubbles.
+- HIGH     — 180–195°C:    Loud, sharp, intense frying sound. Dense rapid bubbles.
+- TOO_HIGH — above 195°C:  Violent, chaotic, sputtering. Danger of burning.
 
-必ずJSONだけを返してください。`;
+## User's Target Mode
+The user selected: ${MODE_DESCRIPTIONS[mode]}
+
+## Judgment Rules
+Compare current_zone to the user's target:
+- UNDER   — current zone is cooler than target
+- PERFECT — current zone matches target
+- OVER    — current zone is hotter than target
+
+## Advice
+Write a short, energetic English phrase (max 6 words) with 1 emoji.
+Examples: "Perfect! 🍤", "Heat it up! 🔥", "Lower the heat! 🧊", "Too hot! 🚩", "Almost there! ⏳"
+
+Return JSON only.`;
 }
 
-const USER_PROMPT =
-  "この音声を解析して、油温ゾーン・推定温度帯・確信度・次の一手をJSONで返してください。";
-
 type AnalysisResult = {
-  zone: "低い" | "適温" | "高い";
-  estimated_temp_range: string;
-  confidence: number;
+  current_zone: "TOO_LOW" | "LOW" | "MEDIUM" | "HIGH" | "TOO_HIGH";
+  estimated_temp: number;
+  judgment: "UNDER" | "PERFECT" | "OVER";
   advice: string;
 };
 
@@ -89,23 +101,25 @@ function parseAnalysisResult(rawText: string | undefined): AnalysisResult {
 
   const parsed = JSON.parse(rawText) as Partial<AnalysisResult>;
 
-  if (parsed.zone !== "低い" && parsed.zone !== "適温" && parsed.zone !== "高い") {
-    throw new Error("invalid zone");
+  const validZones = ["TOO_LOW", "LOW", "MEDIUM", "HIGH", "TOO_HIGH"] as const;
+  if (!validZones.includes(parsed.current_zone as never)) {
+    throw new Error("invalid current_zone");
   }
-  if (typeof parsed.estimated_temp_range !== "string" || !parsed.estimated_temp_range.trim()) {
-    throw new Error("invalid estimated_temp_range");
+  if (typeof parsed.estimated_temp !== "number" || !Number.isFinite(parsed.estimated_temp)) {
+    throw new Error("invalid estimated_temp");
   }
-  if (typeof parsed.confidence !== "number" || !Number.isFinite(parsed.confidence)) {
-    throw new Error("invalid confidence");
+  const validJudgments = ["UNDER", "PERFECT", "OVER"] as const;
+  if (!validJudgments.includes(parsed.judgment as never)) {
+    throw new Error("invalid judgment");
   }
   if (typeof parsed.advice !== "string" || !parsed.advice.trim()) {
     throw new Error("invalid advice");
   }
 
   return {
-    zone: parsed.zone,
-    estimated_temp_range: parsed.estimated_temp_range.trim(),
-    confidence: Math.min(1, Math.max(0, parsed.confidence)),
+    current_zone: parsed.current_zone!,
+    estimated_temp: Math.round(parsed.estimated_temp),
+    judgment: parsed.judgment!,
     advice: parsed.advice.trim(),
   };
 }
@@ -140,12 +154,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "file too large" }, { status: 413 });
     }
 
-    // Parse and validate target temperature
-    const targetRaw = formData.get("target");
-    const target = typeof targetRaw === "string" ? Number(targetRaw) : NaN;
-    if (!Number.isFinite(target) || target < 100 || target > 300) {
-      return NextResponse.json({ error: "invalid target temperature" }, { status: 400 });
+    const modeRaw = formData.get("mode");
+    if (modeRaw !== "low" && modeRaw !== "medium" && modeRaw !== "high") {
+      return NextResponse.json({ error: "invalid mode" }, { status: 400 });
     }
+    const mode: TargetMode = modeRaw;
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -159,11 +172,11 @@ export async function POST(request: Request) {
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
       contents: [
-        { text: USER_PROMPT },
+        { text: "Analyze this audio clip and return the oil temperature classification as JSON." },
         { inlineData: { data: audioBase64, mimeType } },
       ],
       config: {
-        systemInstruction: buildSystemPrompt(target),
+        systemInstruction: buildSystemPrompt(mode),
         responseMimeType: "application/json",
         responseJsonSchema: ANALYSIS_RESPONSE_SCHEMA,
       },
