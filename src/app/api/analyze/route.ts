@@ -17,67 +17,87 @@ const ANALYSIS_RESPONSE_SCHEMA = {
     current_zone: {
       type: "string",
       enum: ["TOO_LOW", "LOW", "MEDIUM", "HIGH", "TOO_HIGH"],
-      description: "5-zone oil temperature classification based on sound.",
-    },
-    estimated_temp: {
-      type: "number",
-      description: "Estimated oil temperature in °C as an integer (e.g. 170).",
+      description: "5-zone oil temperature classification based on acoustic analysis.",
     },
     judgment: {
       type: "string",
       enum: ["UNDER", "PERFECT", "OVER"],
       description: "Whether the current zone is below, matching, or above the user's target.",
     },
-    advice: {
+    acoustic_reasoning: {
       type: "string",
-      description: "Short punchy English feedback with emoji. e.g. 'Perfect! 🍤' or 'Lower the heat! 🚩'",
+      description: "One brief sentence explaining the acoustic features detected (e.g. frequency peaks, burst density, texture).",
     },
   },
-  required: ["current_zone", "estimated_temp", "judgment", "advice"],
+  required: ["current_zone", "judgment", "acoustic_reasoning"],
 } as const;
 
 type TargetMode = "low" | "medium" | "high";
 
-const MODE_DESCRIPTIONS: Record<TargetMode, string> = {
-  low:    "LOW zone (155–165°C) — veggies and potatoes (🥬)",
-  medium: "MEDIUM zone (165–180°C) — chicken karaage and tonkatsu (🍗)",
-  high:   "HIGH zone (180–195°C) — tempura and seafood (🍤)",
+const MODE_TARGET_LABELS: Record<TargetMode, string> = {
+  low:    "Low (160–165°C) — veggies and potatoes 🥬",
+  medium: "Medium (170–175°C) — chicken karaage and tonkatsu 🍗",
+  high:   "High (180–185°C) — tempura and seafood 🍤",
 };
 
 function buildSystemPrompt(mode: TargetMode): string {
-  return `You are the AI engine for "TempuraTune", a smart frying temperature app.
-The user sends a 2-second audio recording of hot oil.
-Classify the oil temperature based on sound characteristics: pitch, bubble density, and intensity.
+  return `# Role
+You are the core acoustic analysis engine for "TempuraTune". Your task is to directly analyze the audio spectrogram of frying sounds (sizzling oil) and classify the temperature into one of five specific zones based on physical acoustic properties.
 
-## 5 Temperature Zones
+# Acoustic Physics Context
+Frying sound is created by the bursting of water vapor bubbles.
+- Low Temp = Large bubbles, slow burst rate, lower frequencies.
+- High Temp = Tiny bubbles, rapid burst rate, high-frequency energy.
 
-- TOO_LOW  — below 155°C:  Very quiet, almost silent. Weak or no bubbling.
-- LOW      — 155–165°C:    Calm, light crackling. Gentle bubbles.
-- MEDIUM   — 165–180°C:    Standard rhythmic frying sound. Steady bubbles.
-- HIGH     — 180–195°C:    Loud, sharp, intense frying sound. Dense rapid bubbles.
-- TOO_HIGH — above 195°C:  Violent, chaotic, sputtering. Danger of burning.
+# Temperature Classification (The 5-Zone System)
+Classify the audio based on peak frequencies, burst density, and texture:
 
-## User's Target Mode
-The user selected: ${MODE_DESCRIPTIONS[mode]}
+1. [TOO_LOW] (< 155°C):
+   - Frequency: Dominant energy under 2 kHz.
+   - Density & Amplitude: Low density, intermittent.
+   - Texture: Slow, heavy, muffled bubbling.
+   - Onomatopoeia Label: "Boko... Boko..."
 
-## Judgment Rules
+2. [LOW] (160°C - 165°C):
+   - Frequency: Broadband noise with peak energy around 2 - 4 kHz.
+   - Density & Amplitude: Continuous but soft amplitude.
+   - Texture: Gentle, expanding hiss with very few sharp attacks.
+   - Onomatopoeia Label: "Shuwa-shuwa"
+
+3. [MEDIUM] (170°C - 175°C):
+   - Frequency: Broad spectrum with clear peaks emerging around 4 - 6 kHz.
+   - Density & Amplitude: Steady, rhythmic, and uniform medium density.
+   - Texture: Crisp, light popping sounds.
+   - Onomatopoeia Label: "Pichi-pichi"
+
+4. [HIGH] (180°C - 185°C):
+   - Frequency: Significant energy shift to high band (6 - 10 kHz).
+   - Density & Amplitude: Very high density, rapid-fire crackles, high amplitude.
+   - Texture: Sharp, dry, and intense high-pitched sizzle.
+   - Onomatopoeia Label: "Chiri-chiri" or "Kara-kara"
+
+5. [TOO_HIGH] (> 195°C):
+   - Frequency: Chaotic. Explosive low-mid spikes combined with harsh high-frequency hiss.
+   - Density & Amplitude: Erratic, aggressive, with sudden loud volume spikes.
+   - Texture: Violent splattering and exploding.
+   - Onomatopoeia Label: "Bachi! Pan!"
+
+# User's Target Mode
+The user selected: [Target: ${MODE_TARGET_LABELS[mode]}]
+
+# Judgment Rules
 Compare current_zone to the user's target:
 - UNDER   — current zone is cooler than target
 - PERFECT — current zone matches target
 - OVER    — current zone is hotter than target
-
-## Advice
-Write a short, energetic English phrase (max 6 words) with 1 emoji.
-Examples: "Perfect! 🍤", "Heat it up! 🔥", "Lower the heat! 🧊", "Too hot! 🚩", "Almost there! ⏳"
 
 Return JSON only.`;
 }
 
 type AnalysisResult = {
   current_zone: "TOO_LOW" | "LOW" | "MEDIUM" | "HIGH" | "TOO_HIGH";
-  estimated_temp: number;
   judgment: "UNDER" | "PERFECT" | "OVER";
-  advice: string;
+  acoustic_reasoning: string;
 };
 
 export const runtime = "nodejs";
@@ -105,22 +125,18 @@ function parseAnalysisResult(rawText: string | undefined): AnalysisResult {
   if (!validZones.includes(parsed.current_zone as never)) {
     throw new Error("invalid current_zone");
   }
-  if (typeof parsed.estimated_temp !== "number" || !Number.isFinite(parsed.estimated_temp)) {
-    throw new Error("invalid estimated_temp");
-  }
   const validJudgments = ["UNDER", "PERFECT", "OVER"] as const;
   if (!validJudgments.includes(parsed.judgment as never)) {
     throw new Error("invalid judgment");
   }
-  if (typeof parsed.advice !== "string" || !parsed.advice.trim()) {
-    throw new Error("invalid advice");
+  if (typeof parsed.acoustic_reasoning !== "string" || !parsed.acoustic_reasoning.trim()) {
+    throw new Error("invalid acoustic_reasoning");
   }
 
   return {
     current_zone: parsed.current_zone!,
-    estimated_temp: Math.round(parsed.estimated_temp),
     judgment: parsed.judgment!,
-    advice: parsed.advice.trim(),
+    acoustic_reasoning: parsed.acoustic_reasoning.trim(),
   };
 }
 

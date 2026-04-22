@@ -14,9 +14,8 @@ type TargetMode = {
 
 type AnalysisResult = {
   current_zone: "TOO_LOW" | "LOW" | "MEDIUM" | "HIGH" | "TOO_HIGH";
-  estimated_temp: number;
   judgment: "UNDER" | "PERFECT" | "OVER";
-  advice: string;
+  acoustic_reasoning: string;
 };
 
 type ScreenState = "select" | "measure";
@@ -28,19 +27,37 @@ const MIN_T = 140;
 const MAX_T = 220;
 
 const MODES: TargetMode[] = [
-  { id: "low",    emoji: "🥬", label: "低温",  sublabel: "野菜・ポテト",       tempRange: "155–165°C", targetTemp: 160 },
-  { id: "medium", emoji: "🍗", label: "中温",  sublabel: "唐揚げ・トンカツ",    tempRange: "165–180°C", targetTemp: 172 },
-  { id: "high",   emoji: "🍤", label: "高温",  sublabel: "天ぷら・魚介",       tempRange: "180–195°C", targetTemp: 187 },
+  { id: "low",    emoji: "🥬", label: "低温",  sublabel: "野菜・ポテト",       tempRange: "160–165°C", targetTemp: 162 },
+  { id: "medium", emoji: "🍗", label: "中温",  sublabel: "唐揚げ・トンカツ",    tempRange: "170–175°C", targetTemp: 172 },
+  { id: "high",   emoji: "🍤", label: "高温",  sublabel: "天ぷら・魚介",       tempRange: "180–185°C", targetTemp: 182 },
 ];
 
-// 5 fixed temperature zones
+// 5 fixed temperature zones (boundaries bridging the gaps between defined ranges)
 const ZONE_DEFS = [
-  { id: "TOO_LOW",  from: MIN_T, to: 155,   color: "oklch(0.60 0.08 240)" },
-  { id: "LOW",      from: 155,   to: 165,   color: "oklch(0.72 0.17 230)" },
-  { id: "MEDIUM",   from: 165,   to: 180,   color: "oklch(0.78 0.17 145)" },
-  { id: "HIGH",     from: 180,   to: 195,   color: "oklch(0.83 0.16 55)"  },
-  { id: "TOO_HIGH", from: 195,   to: MAX_T, color: "oklch(0.68 0.19 25)"  },
+  { id: "TOO_LOW",  from: MIN_T, to: 158,   color: "oklch(0.60 0.08 240)" },
+  { id: "LOW",      from: 158,   to: 167,   color: "oklch(0.72 0.17 230)" },
+  { id: "MEDIUM",   from: 167,   to: 177,   color: "oklch(0.78 0.17 145)" },
+  { id: "HIGH",     from: 177,   to: 192,   color: "oklch(0.83 0.16 55)"  },
+  { id: "TOO_HIGH", from: 192,   to: MAX_T, color: "oklch(0.68 0.19 25)"  },
 ] as const;
+
+// Needle rests at zone center when no estimated_temp available
+const ZONE_NEEDLE_TEMP: Record<string, number> = {
+  TOO_LOW:  149,
+  LOW:      163,
+  MEDIUM:   172,
+  HIGH:     184,
+  TOO_HIGH: 207,
+};
+
+// Onomatopoeia and Japanese label per zone
+const ZONE_DISPLAY: Record<string, { label: string; onomato: string }> = {
+  TOO_LOW:  { label: "低すぎ",  onomato: "Boko... Boko..." },
+  LOW:      { label: "低温",    onomato: "Shuwa-shuwa" },
+  MEDIUM:   { label: "中温",    onomato: "Pichi-pichi" },
+  HIGH:     { label: "高温",    onomato: "Chiri-chiri" },
+  TOO_HIGH: { label: "高すぎ",  onomato: "Bachi! Pan!" },
+};
 
 const ZONE_FOR_MODE: Record<"low" | "medium" | "high", AnalysisResult["current_zone"]> = {
   low: "LOW",
@@ -340,7 +357,7 @@ function MeasureScreen({
   onRetry: () => void;
 }) {
   const currentZone = result?.current_zone ?? ZONE_FOR_MODE[mode.id];
-  const temp = result?.estimated_temp ?? mode.targetTemp;
+  const temp = ZONE_NEEDLE_TEMP[currentZone] ?? mode.targetTemp;
   const currentColor = colorForZone(currentZone);
   const onTarget = result?.judgment === "PERFECT";
   const isActive = activity === "listening" || activity === "analyzing" || activity === "permission";
@@ -384,24 +401,33 @@ function MeasureScreen({
         <div className="relative w-full max-w-[400px]">
           <MeterSVG temp={temp} targetTemp={mode.targetTemp} currentZone={currentZone} />
           <div className="absolute left-0 right-0 flex flex-col items-center" style={{ top: "54%" }}>
-            <div
-              style={{
-                fontSize: 100,
-                fontWeight: 800,
-                letterSpacing: -4,
-                lineHeight: 1,
-                fontVariantNumeric: "tabular-nums",
-                color: currentColor,
-                textShadow: `0 0 40px ${currentColor}55`,
-                transition: "color 300ms linear",
-                opacity: isIdle || isPaused ? 0.4 : 1,
-              }}
-            >
-              {result ? result.estimated_temp : "--"}
-              <span style={{ fontSize: 40, fontWeight: 700, marginLeft: 4, verticalAlign: "top", color: "rgba(255,255,255,0.7)" }}>
-                {result ? "°" : ""}
-              </span>
-            </div>
+            {result ? (
+              <>
+                <div style={{
+                  fontSize: 28,
+                  fontWeight: 800,
+                  color: currentColor,
+                  textShadow: `0 0 30px ${currentColor}66`,
+                  transition: "color 300ms linear",
+                  letterSpacing: -0.5,
+                }}>
+                  {ZONE_DISPLAY[currentZone]?.onomato ?? currentZone}
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.45)", marginTop: 4 }}>
+                  {ZONE_DISPLAY[currentZone]?.label}
+                </div>
+              </>
+            ) : (
+              <div style={{
+                fontSize: 32,
+                fontWeight: 700,
+                color: "rgba(255,255,255,0.25)",
+                letterSpacing: -1,
+                opacity: isIdle || isPaused ? 1 : 0.5,
+              }}>
+                --
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -434,10 +460,10 @@ function MeasureScreen({
         )}
       </div>
 
-      {/* Advice */}
+      {/* Acoustic reasoning */}
       {result && (
         <div className="relative z-10 mx-5 mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-          <p className="text-sm leading-6 text-white/70">{result.advice}</p>
+          <p className="text-sm leading-6 text-white/70">{result.acoustic_reasoning}</p>
         </div>
       )}
 
