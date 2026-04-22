@@ -284,9 +284,9 @@ function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset
       className="relative overflow-hidden flex flex-col items-center justify-between"
       style={{
         background: "linear-gradient(180deg, #1a1d24 0%, #15171d 100%)",
-        borderRadius: 22,
-        aspectRatio: "1 / 1.15",
-        padding: "14px 8px 12px",
+        borderRadius: 18,
+        aspectRatio: "1 / 1",
+        padding: "10px 6px 8px",
         boxShadow: pressed
           ? `0 0 0 1px ${tint}, inset 0 2px 6px rgba(0,0,0,0.5)`
           : "0 0 0 1px rgba(255,255,255,0.06), 0 6px 16px rgba(0,0,0,0.4)",
@@ -306,9 +306,9 @@ function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset
       </div>
 
       {/* Emoji or custom icon */}
-      <div className="flex-1 flex items-center justify-center" style={{ fontSize: 56, lineHeight: 1, filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.4))" }}>
+      <div className="flex-1 flex items-center justify-center" style={{ fontSize: 44, lineHeight: 1, filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.4))" }}>
         {isCustom ? (
-          <svg width="56" height="56" viewBox="0 0 64 64">
+          <svg width="44" height="44" viewBox="0 0 64 64">
             <circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="3" strokeDasharray="4 6" />
             <circle cx="32" cy="32" r="14" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.6)" strokeWidth="2" />
             <line x1="32" y1="32" x2="48" y2="20" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
@@ -352,24 +352,27 @@ function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
       />
 
       {/* Header */}
-      <div className="relative z-10 pt-16 px-6 pb-5">
-        <div className="flex items-center gap-2.5 mb-3.5">
+      <div className="relative z-10 pt-10 px-6 pb-3">
+        <div className="flex items-center gap-2 mb-3">
           {/* Steam glyph */}
-          <svg width="22" height="22" viewBox="0 0 24 24">
+          <svg width="18" height="18" viewBox="0 0 24 24">
             <path d="M8 3 C 8 6, 6 6, 6 9 C 6 11, 8 11, 8 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
             <path d="M12 3 C 12 6, 10 6, 10 9 C 10 11, 12 11, 12 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
             <path d="M16 3 C 16 6, 14 6, 14 9 C 14 11, 16 11, 16 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
           </svg>
-          <span className="text-[13px] font-semibold uppercase tracking-[0.12em] text-white/55">TempuraTune</span>
+          <span className="text-[12px] font-semibold uppercase tracking-[0.12em] text-white/55">TempuraTune</span>
         </div>
-        <h1 className="m-0 text-[30px] font-extrabold leading-tight" style={{ letterSpacing: -0.8 }}>
+        <h1 className="m-0 text-[26px] font-extrabold leading-tight" style={{ letterSpacing: -0.8 }}>
           今日は何を<br />作る?
         </h1>
+        <p className="mt-2 text-sm leading-5 text-white/55 max-w-xs">
+          キッチンにスマホを置いたまま、2秒ごとに油音を解析します。まずは料理を選んで、目標温度をセットしてください。
+        </p>
       </div>
 
       {/* 2×3 Grid */}
       <div
-        className="relative z-10 flex-1 grid gap-3 px-4 pb-10"
+        className="relative z-10 flex-1 grid gap-2 px-4 pb-4"
         style={{ gridTemplateColumns: "1fr 1fr", alignContent: "start" }}
       >
         {DISHES.map((d) => (
@@ -473,6 +476,28 @@ function MeasureScreen({
         </div>
       </div>
 
+      {/* Advice */}
+      {result && (
+        <div className="relative z-10 mx-5 mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+          <p className="text-sm leading-6 text-white/70">{result.advice}</p>
+        </div>
+      )}
+
+      {/* Confidence bar */}
+      {result && (
+        <div className="relative z-10 mx-5 mt-2 flex items-center gap-3">
+          <div className="h-1.5 flex-1 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${Math.round(result.confidence * 100)}%`, background: currentColor }}
+            />
+          </div>
+          <span className="text-xs text-white/40 tabular-nums w-8 text-right">
+            {Math.round(result.confidence * 100)}%
+          </span>
+        </div>
+      )}
+
       {/* Error message */}
       {errorMessage && (
         <div className="relative z-10 mx-6 mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70 text-center">
@@ -541,15 +566,30 @@ export default function Home() {
 
   async function runAnalysisLoop(stream: MediaStream) {
     loopActiveRef.current = true;
+    let consecutiveErrors = 0;
+    const MAX_ERRORS = 3;
+
     while (loopActiveRef.current) {
-      setActivity("listening");
-      const { blob, mimeType } = await recordAudioChunk(stream, CHUNK_DURATION_MS);
-      if (!loopActiveRef.current) break;
-      setActivity("analyzing");
-      const next = await analyzeAudioChunk(blob, mimeType);
-      if (!loopActiveRef.current) break;
-      setResult(next);
-      setErrorMessage("");
+      try {
+        setActivity("listening");
+        const { blob, mimeType } = await recordAudioChunk(stream, CHUNK_DURATION_MS);
+        if (!loopActiveRef.current) break;
+        setActivity("analyzing");
+        const next = await analyzeAudioChunk(blob, mimeType);
+        if (!loopActiveRef.current) break;
+        setResult(next);
+        setErrorMessage("");
+        consecutiveErrors = 0;
+      } catch (error) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_ERRORS) {
+          loopActiveRef.current = false;
+          setActivity("error");
+          setErrorMessage(error instanceof Error ? error.message : "判定に失敗しました。");
+          break;
+        }
+        // 一時的なエラー — ループを継続
+      }
     }
   }
 

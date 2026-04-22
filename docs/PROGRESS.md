@@ -14,8 +14,9 @@
 - Phase 2: ✅ 完了
 - Phase 3: ✅ 完了
 - Phase 4: ✅ 完了
-- Phase 5: ⚪ 未着手
-- Phase 6: ⚪ 未着手
+- Phase 5: ✅ 完了
+- Phase 5.5: ⚪ 未着手
+- Phase 6: ✅ 完了（Phase 4直後に実施）
 - Phase 7: ⚪ 未着手
 
 凡例: ✅完了 🟡進行中 ⚪未着手 🔴ブロック中

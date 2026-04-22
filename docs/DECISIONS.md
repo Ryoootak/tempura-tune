@@ -25,10 +25,10 @@
 - 不採用理由: ViteはSSR弱い、プレーンReactはルーティング自前
 
 ## 2026-04-21: AI判定にGemini採用
-- 判断: Gemini 3.1 Flash
+- 判断: gemini-2.5-flash
 - 選択肢: Gemini / OpenAI Realtime / Claude
 - 採用理由: 音声マルチモーダル対応、コスト最安、
-  9.5時間まで音声処理可能
+  generateContent で structured output との相性が良い
 - 不採用理由: OpenAIは料金高、Claudeは音声非対応
 
 ## 2026-04-21: マネタイズ方針

@@ -52,9 +52,10 @@ App Storeに出す。ポートフォリオ作品として運用。
 - [ ] 必要ならプロンプトやUI文言を調整
 
 ### Phase 6: Vercelデプロイ
-- [ ] Vercel接続
-- [ ] 環境変数設定
-- [ ] 本番動作確認
+※ Phase 4直後に完了済み（GitHubプッシュで自動デプロイ）
+- [x] Vercel接続
+- [x] 環境変数設定
+- [x] 本番動作確認
 - [ ] PWA化準備(manifest.json, アイコン)
 - [ ] tempura-tune.app などのドメイン検討
 
