@@ -12,7 +12,7 @@ type DishPreset = {
 };
 
 type AnalysisResult = {
-  zone: "ぬるい" | "適温" | "熱すぎ";
+  zone: "低い" | "適温" | "高い";
   estimated_temp_range: string;
   confidence: number;
   advice: string;
@@ -35,19 +35,26 @@ const DISHES: DishPreset[] = [
   { id: "custom",   emoji: null, name: "カスタム",       target: 170 },
 ];
 
-const ZONES = [
-  { from: 140, to: 160, color: "oklch(0.70 0.17 230)" },
-  { from: 160, to: 180, color: "oklch(0.78 0.17 145)" },
-  { from: 180, to: 200, color: "oklch(0.85 0.17 90)"  },
-  { from: 200, to: 220, color: "oklch(0.68 0.19 25)"  },
-];
+// ─── Zone helpers (target-relative) ───────────────────────────
+const ZONE_MARGIN = 10; // ±10°C from target = 適温
 
-// ─── Helpers ──────────────────────────────────────────────────
-function colorForTemp(t: number): string {
-  for (const z of ZONES) if (t >= z.from && t < z.to) return z.color;
-  return ZONES[ZONES.length - 1].color;
+function buildMeterZones(target: number) {
+  const lo = Math.max(MIN_T, target - ZONE_MARGIN);
+  const hi = Math.min(MAX_T, target + ZONE_MARGIN);
+  return [
+    { from: MIN_T, to: lo,   color: "oklch(0.70 0.17 230)" }, // 低い — blue
+    { from: lo,   to: hi,   color: "oklch(0.78 0.17 145)" }, // 適温 — green
+    { from: hi,   to: MAX_T, color: "oklch(0.68 0.19 25)"  }, // 高い — red
+  ];
 }
 
+function colorForTargetTemp(t: number, target: number): string {
+  const zones = buildMeterZones(target);
+  for (const z of zones) if (t >= z.from && t < z.to) return z.color;
+  return zones[zones.length - 1].color;
+}
+
+// DishCard uses absolute scale (independent of any selected target)
 function tempTint(t: number | null): string {
   if (!t) return "oklch(0.70 0.02 250)";
   if (t < 160) return "oklch(0.70 0.17 230)";
@@ -56,6 +63,7 @@ function tempTint(t: number | null): string {
   return "oklch(0.68 0.19 25)";
 }
 
+// ─── Geometry helpers ─────────────────────────────────────────
 function tempToAngle(t: number): number {
   const clamped = Math.max(MIN_T, Math.min(MAX_T, t));
   return -90 + ((clamped - MIN_T) / (MAX_T - MIN_T)) * 180;
@@ -80,7 +88,7 @@ function extractTemp(range: string | undefined, fallback: number): number {
   return Math.round(nums.reduce((s, n) => s + n, 0) / nums.length);
 }
 
-// MediaRecorder: try explicit mimeType, fall back to browser default on any error
+// ─── MediaRecorder helpers ────────────────────────────────────
 function resolveRecorderMimeType(): string {
   if (typeof MediaRecorder === "undefined") return "";
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
@@ -100,11 +108,11 @@ async function recordAudioChunk(
 
   const mimeType = resolveRecorderMimeType();
 
-  // Try with explicit mimeType; if construction or start fails, fall back to browser default
   let recorder: MediaRecorder;
   try {
     recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
   } catch {
+    // mimeType rejected at construction — fall back to browser default
     recorder = new MediaRecorder(stream);
   }
 
@@ -120,18 +128,25 @@ async function recordAudioChunk(
     try {
       recorder.start();
     } catch {
+      // start() failed (e.g. iOS quirk) — reject cleanly
       reject(new Error("録音を開始できませんでした。マイクの設定を確認してください。"));
-      return;
     }
 
-    window.setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, durationMs);
+    window.setTimeout(() => {
+      if (recorder.state !== "inactive") recorder.stop();
+    }, durationMs);
   });
 }
 
-async function analyzeAudioChunk(blob: Blob, mimeType: string): Promise<AnalysisResult> {
+async function analyzeAudioChunk(
+  blob: Blob,
+  mimeType: string,
+  target: number,
+): Promise<AnalysisResult> {
   const ext = extensionForMimeType(mimeType);
   const fd = new FormData();
   fd.append("audio", blob, `chunk.${ext}`);
+  fd.append("target", String(target));
   const res = await fetch("/api/analyze", { method: "POST", body: fd });
   const payload = (await res.json()) as AnalysisResult | { error?: string };
   if (!res.ok) throw new Error("error" in payload && payload.error ? payload.error : "判定APIでエラーが発生しました。");
@@ -150,7 +165,7 @@ function ListeningBars({ active }: { active: boolean }) {
           style={{
             height: 10,
             animation: active ? `barPulse 1000ms ease-in-out ${i * 120}ms infinite` : "none",
-            opacity: active ? 1 : 0.25,
+            opacity: active ? 1 : 0.2,
             transition: "opacity 300ms",
           }}
         />
@@ -168,7 +183,7 @@ function ListeningBars({ active }: { active: boolean }) {
 function DeltaIndicator({ temp, target }: { temp: number; target: number }) {
   const diff = target - temp;
   const abs = Math.abs(diff);
-  if (abs <= 3) return null;
+  if (abs <= ZONE_MARGIN) return null;
   const steps = 5;
   const proximity = Math.max(0, Math.min(steps, steps - Math.floor(abs / 4)));
   const isUp = diff > 0;
@@ -227,6 +242,7 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
   const rTrack = 168;
   const trackW = 32;
 
+  const zones = buildMeterZones(target);
   const needleA = tempToAngle(temp);
   const tip = polar(cx, cy, rTrack - 6, needleA);
   const baseL = polar(cx, cy, 12, needleA - 90);
@@ -239,7 +255,7 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
   const n1 = polar(cx, cy, notchOuterR, targetA - 3);
   const n2 = polar(cx, cy, notchOuterR, targetA + 3);
 
-  const currentColor = colorForTemp(temp);
+  const currentColor = colorForTargetTemp(temp, target);
 
   const ticks: React.ReactNode[] = [];
   for (let t = MIN_T; t <= MAX_T; t += 10) {
@@ -261,7 +277,7 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
       <path d={arcPath(cx, cy, rTrack, -90, 90)}
         stroke="rgba(255,255,255,0.06)" strokeWidth={trackW}
         strokeLinecap="butt" fill="none" />
-      {ZONES.map((z, i) => (
+      {zones.map((z, i) => (
         <path key={i} d={arcPath(cx, cy, rTrack, tempToAngle(z.from), tempToAngle(z.to))}
           stroke={z.color} strokeWidth={trackW - 6}
           strokeLinecap="butt" fill="none" opacity={0.92} />
@@ -377,6 +393,7 @@ function MeasureScreen({
   activity,
   errorMessage,
   onBack,
+  onStart,
   onPause,
   onResume,
   onRetry,
@@ -386,14 +403,16 @@ function MeasureScreen({
   activity: ActivityState;
   errorMessage: string;
   onBack: () => void;
+  onStart: () => void;
   onPause: () => void;
   onResume: () => void;
   onRetry: () => void;
 }) {
   const temp = extractTemp(result?.estimated_temp_range, dish.target);
-  const currentColor = colorForTemp(temp);
-  const onTarget = result !== null && Math.abs(temp - dish.target) <= 3;
+  const currentColor = colorForTargetTemp(temp, dish.target);
+  const onTarget = result !== null && Math.abs(temp - dish.target) <= ZONE_MARGIN;
   const isActive = activity === "listening" || activity === "analyzing" || activity === "permission";
+  const isIdle = activity === "idle";
   const isPaused = activity === "paused";
 
   return (
@@ -403,14 +422,14 @@ function MeasureScreen({
         className="absolute inset-0 pointer-events-none"
         style={{
           background: `radial-gradient(ellipse 80% 55% at 50% 18%, ${currentColor} 0%, transparent 60%)`,
-          opacity: isActive ? 0.14 : 0.06,
+          opacity: isActive ? 0.14 : 0.05,
           transition: "background 400ms linear, opacity 400ms",
         }}
       />
 
       <OnTargetFlash visible={onTarget} />
 
-      {/* Top bar: back button + mic/bars */}
+      {/* Top bar */}
       <div className="relative z-10 flex items-center justify-between px-5 pt-12 pb-2">
         <button
           type="button"
@@ -446,7 +465,7 @@ function MeasureScreen({
                 color: currentColor,
                 textShadow: `0 0 40px ${currentColor}55`,
                 transition: "color 300ms linear",
-                opacity: isPaused ? 0.6 : 1,
+                opacity: isIdle || isPaused ? 0.4 : 1,
               }}
             >
               {result ? Math.round(temp) : "--"}
@@ -460,7 +479,7 @@ function MeasureScreen({
 
       {/* Delta indicator */}
       <div className="relative z-10 flex justify-center items-center min-h-8 -mt-2">
-        {result && <DeltaIndicator temp={temp} target={dish.target} />}
+        {result && isActive && <DeltaIndicator temp={temp} target={dish.target} />}
       </div>
 
       {/* Target row */}
@@ -519,27 +538,27 @@ function MeasureScreen({
         ) : (
           <button
             type="button"
-            onClick={isPaused ? onResume : onPause}
+            onClick={isIdle || isPaused ? (isIdle ? onStart : onResume) : onPause}
             className="flex items-center justify-center"
             style={{
               width: 88, height: 88, borderRadius: 9999,
               background: "transparent",
-              border: `4px solid ${isPaused ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.9)"}`,
+              border: `4px solid ${isActive ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.5)"}`,
               cursor: "pointer",
               boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
               transition: "border-color 300ms",
             }}
           >
-            {isPaused ? (
-              // Play ▶
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <path d="M9 5 L23 14 L9 23 Z" fill="rgba(255,255,255,0.85)" />
-              </svg>
-            ) : (
+            {isActive ? (
               // Pause ⏸
               <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
                 <rect x="6" y="5" width="6" height="18" rx="2" fill="rgba(255,255,255,0.85)" />
                 <rect x="16" y="5" width="6" height="18" rx="2" fill="rgba(255,255,255,0.85)" />
+              </svg>
+            ) : (
+              // Play ▶ (idle or paused)
+              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                <path d="M9 5 L23 14 L9 23 Z" fill="rgba(255,255,255,0.85)" />
               </svg>
             )}
           </button>
@@ -575,8 +594,8 @@ export default function Home() {
     };
   }, []);
 
-  // Overlap: fire API in background, immediately start next recording
-  async function runAnalysisLoop(stream: MediaStream) {
+  // Overlap: fire API in background, immediately continue to next recording
+  async function runAnalysisLoop(stream: MediaStream, target: number) {
     loopActiveRef.current = true;
     pendingCallRef.current = false;
     let consecutiveErrors = 0;
@@ -588,10 +607,10 @@ export default function Home() {
         const { blob, mimeType } = await recordAudioChunk(stream, CHUNK_DURATION_MS);
         if (!loopActiveRef.current) break;
 
-        // Fire API call in background — don't await, overlap with next recording
+        // Fire API call without awaiting — overlap with next recording
         if (!pendingCallRef.current) {
           pendingCallRef.current = true;
-          analyzeAudioChunk(blob, mimeType)
+          analyzeAudioChunk(blob, mimeType, target)
             .then((next) => {
               pendingCallRef.current = false;
               if (!loopActiveRef.current) return;
@@ -609,7 +628,7 @@ export default function Home() {
               }
             });
         }
-        // Loop continues immediately → next recording starts without waiting for API
+        // Loop continues immediately → next recording
       } catch (error) {
         consecutiveErrors++;
         if (consecutiveErrors >= MAX_ERRORS) {
@@ -622,18 +641,21 @@ export default function Home() {
     }
   }
 
-  async function startMeasurement(dish: DishPreset) {
-    if (!hasMicSupport) {
-      setScreen("measure");
-      setSelectedDish(dish);
-      setActivity("error");
-      setErrorMessage("このブラウザではマイク録音に対応していません。");
-      return;
-    }
+  // Navigate to Screen 2 without starting — user presses ▶ manually
+  function selectDish(dish: DishPreset) {
     setScreen("measure");
     setSelectedDish(dish);
     setResult(null);
     setErrorMessage("");
+    setActivity("idle");
+  }
+
+  async function startRecording(dish: DishPreset) {
+    if (!hasMicSupport) {
+      setActivity("error");
+      setErrorMessage("このブラウザではマイク録音に対応していません。");
+      return;
+    }
     setActivity("permission");
     try {
       streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -641,7 +663,7 @@ export default function Home() {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       streamRef.current = stream;
-      await runAnalysisLoop(stream);
+      await runAnalysisLoop(stream, dish.target);
     } catch (error) {
       loopActiveRef.current = false;
       setActivity("error");
@@ -660,19 +682,7 @@ export default function Home() {
   async function resumeMeasurement() {
     if (!selectedDish) return;
     setErrorMessage("");
-    setActivity("permission");
-    try {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      });
-      streamRef.current = stream;
-      await runAnalysisLoop(stream);
-    } catch (error) {
-      loopActiveRef.current = false;
-      setActivity("error");
-      setErrorMessage(error instanceof Error ? error.message : "判定に失敗しました。");
-    }
+    await startRecording(selectedDish);
   }
 
   function goBack() {
@@ -687,7 +697,7 @@ export default function Home() {
   }
 
   if (screen === "select") {
-    return <SelectScreen onPick={(d) => void startMeasurement(d)} />;
+    return <SelectScreen onPick={selectDish} />;
   }
 
   return (
@@ -697,9 +707,10 @@ export default function Home() {
       activity={activity}
       errorMessage={errorMessage}
       onBack={goBack}
+      onStart={() => selectedDish && void startRecording(selectedDish)}
       onPause={pauseMeasurement}
       onResume={() => void resumeMeasurement()}
-      onRetry={() => selectedDish && void startMeasurement(selectedDish)}
+      onRetry={() => selectedDish && void startRecording(selectedDish)}
     />
   );
 }
