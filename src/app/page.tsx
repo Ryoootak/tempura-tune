@@ -19,7 +19,7 @@ type AnalysisResult = {
 };
 
 type ScreenState = "select" | "measure";
-type ActivityState = "idle" | "permission" | "listening" | "analyzing" | "error";
+type ActivityState = "idle" | "permission" | "listening" | "analyzing" | "paused" | "error";
 
 // ─── Constants ────────────────────────────────────────────────
 const CHUNK_DURATION_MS = 2000;
@@ -35,7 +35,6 @@ const DISHES: DishPreset[] = [
   { id: "custom",   emoji: null, name: "カスタム",       target: 170 },
 ];
 
-// 4-zone color system (blue/green/yellow/red)
 const ZONES = [
   { from: 140, to: 160, color: "oklch(0.70 0.17 230)" },
   { from: 160, to: 180, color: "oklch(0.78 0.17 145)" },
@@ -62,7 +61,6 @@ function tempToAngle(t: number): number {
   return -90 + ((clamped - MIN_T) / (MAX_T - MIN_T)) * 180;
 }
 
-// polar: deg where 0 = up, clockwise
 function polar(cx: number, cy: number, r: number, deg: number) {
   const rad = (deg - 90) * (Math.PI / 180);
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
@@ -82,6 +80,7 @@ function extractTemp(range: string | undefined, fallback: number): number {
   return Math.round(nums.reduce((s, n) => s + n, 0) / nums.length);
 }
 
+// MediaRecorder: try explicit mimeType, fall back to browser default on any error
 function resolveRecorderMimeType(): string {
   if (typeof MediaRecorder === "undefined") return "";
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
@@ -98,8 +97,17 @@ async function recordAudioChunk(
 ): Promise<{ blob: Blob; mimeType: string }> {
   if (typeof MediaRecorder === "undefined")
     throw new Error("このブラウザでは録音に対応していません。");
+
   const mimeType = resolveRecorderMimeType();
-  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+  // Try with explicit mimeType; if construction or start fails, fall back to browser default
+  let recorder: MediaRecorder;
+  try {
+    recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  } catch {
+    recorder = new MediaRecorder(stream);
+  }
+
   return new Promise((resolve, reject) => {
     const chunks: Blob[] = [];
     recorder.addEventListener("dataavailable", (e) => { if (e.data.size > 0) chunks.push(e.data); });
@@ -108,7 +116,14 @@ async function recordAudioChunk(
       const finalMime = recorder.mimeType || mimeType || "audio/webm";
       resolve({ blob: new Blob(chunks, { type: finalMime }), mimeType: finalMime });
     });
-    recorder.start();
+
+    try {
+      recorder.start();
+    } catch {
+      reject(new Error("録音を開始できませんでした。マイクの設定を確認してください。"));
+      return;
+    }
+
     window.setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, durationMs);
   });
 }
@@ -131,11 +146,12 @@ function ListeningBars({ active }: { active: boolean }) {
       {[0, 1, 2, 3, 4].map((i) => (
         <div
           key={i}
-          className="w-1.5 rounded-full bg-white/85 transition-all"
+          className="w-1.5 rounded-full bg-white/85"
           style={{
             height: 10,
             animation: active ? `barPulse 1000ms ease-in-out ${i * 120}ms infinite` : "none",
-            opacity: active ? 1 : 0.3,
+            opacity: active ? 1 : 0.25,
+            transition: "opacity 300ms",
           }}
         />
       ))}
@@ -242,25 +258,19 @@ function MeterSVG({ temp, target }: { temp: number; target: number }) {
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ display: "block", width: "100%" }} aria-hidden="true">
-      {/* Base track */}
       <path d={arcPath(cx, cy, rTrack, -90, 90)}
         stroke="rgba(255,255,255,0.06)" strokeWidth={trackW}
         strokeLinecap="butt" fill="none" />
-      {/* Color zones */}
       {ZONES.map((z, i) => (
         <path key={i} d={arcPath(cx, cy, rTrack, tempToAngle(z.from), tempToAngle(z.to))}
           stroke={z.color} strokeWidth={trackW - 6}
           strokeLinecap="butt" fill="none" opacity={0.92} />
       ))}
-      {/* Ticks */}
       {ticks}
-      {/* Target notch */}
       <polygon points={`${n0.x},${n0.y} ${n1.x},${n1.y} ${n2.x},${n2.y}`} fill="#fff" />
-      {/* Needle */}
       <g style={{ filter: `drop-shadow(0 2px 8px ${currentColor})`, transition: "filter 220ms linear" }}>
         <polygon points={`${baseL.x},${baseL.y} ${tip.x},${tip.y} ${baseR.x},${baseR.y}`} fill={currentColor} />
       </g>
-      {/* Pivot */}
       <circle cx={cx} cy={cy} r={16} fill="#1a1d24" stroke={currentColor} strokeWidth={3} />
       <circle cx={cx} cy={cy} r={5} fill={currentColor} />
     </svg>
@@ -295,17 +305,11 @@ function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset
         cursor: "pointer",
       }}
     >
-      {/* Zone dot */}
       <div className="w-full flex justify-end pr-1">
         {!isCustom && (
-          <div
-            className="w-3 h-3 rounded-full"
-            style={{ background: tint, boxShadow: `0 0 10px ${tint}` }}
-          />
+          <div className="w-3 h-3 rounded-full" style={{ background: tint, boxShadow: `0 0 10px ${tint}` }} />
         )}
       </div>
-
-      {/* Emoji or custom icon */}
       <div className="flex-1 flex items-center justify-center" style={{ fontSize: 44, lineHeight: 1, filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.4))" }}>
         {isCustom ? (
           <svg width="44" height="44" viewBox="0 0 64 64">
@@ -314,12 +318,8 @@ function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset
             <line x1="32" y1="32" x2="48" y2="20" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
             <circle cx="32" cy="32" r="3" fill="#fff" />
           </svg>
-        ) : (
-          dish.emoji
-        )}
+        ) : dish.emoji}
       </div>
-
-      {/* Temp */}
       <div className="flex items-baseline gap-0.5" style={{ fontVariantNumeric: "tabular-nums", color: tint }}>
         {isCustom ? (
           <span style={{ fontSize: 28, fontWeight: 700, color: "rgba(255,255,255,0.7)", letterSpacing: -1 }}>···°</span>
@@ -345,16 +345,9 @@ function DishCard({ dish, onPress }: { dish: DishPreset; onPress: (d: DishPreset
 function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
   return (
     <div className="w-full min-h-screen relative overflow-hidden flex flex-col" style={{ background: "#0b0d11", color: "#fff" }}>
-      {/* Ambient gradient */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{ background: "radial-gradient(ellipse 70% 40% at 50% 0%, oklch(0.30 0.04 60 / 0.35), transparent 60%)" }}
-      />
-
-      {/* Header */}
+      <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(ellipse 70% 40% at 50% 0%, oklch(0.30 0.04 60 / 0.35), transparent 60%)" }} />
       <div className="relative z-10 pt-10 px-6 pb-3">
         <div className="flex items-center gap-2 mb-3">
-          {/* Steam glyph */}
           <svg width="18" height="18" viewBox="0 0 24 24">
             <path d="M8 3 C 8 6, 6 6, 6 9 C 6 11, 8 11, 8 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
             <path d="M12 3 C 12 6, 10 6, 10 9 C 10 11, 12 11, 12 13" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" fill="none" />
@@ -369,12 +362,7 @@ function SelectScreen({ onPick }: { onPick: (d: DishPreset) => void }) {
           キッチンにスマホを置いたまま、2秒ごとに油音を解析します。まずは料理を選んで、目標温度をセットしてください。
         </p>
       </div>
-
-      {/* 2×3 Grid */}
-      <div
-        className="relative z-10 flex-1 grid gap-2 px-4 pb-4"
-        style={{ gridTemplateColumns: "1fr 1fr", alignContent: "start" }}
-      >
+      <div className="relative z-10 flex-1 grid gap-2 px-4 pb-4" style={{ gridTemplateColumns: "1fr 1fr", alignContent: "start" }}>
         {DISHES.map((d) => (
           <DishCard key={d.id} dish={d} onPress={onPick} />
         ))}
@@ -388,57 +376,66 @@ function MeasureScreen({
   result,
   activity,
   errorMessage,
-  onStop,
+  onBack,
+  onPause,
+  onResume,
   onRetry,
 }: {
   dish: DishPreset;
   result: AnalysisResult | null;
   activity: ActivityState;
   errorMessage: string;
-  onStop: () => void;
+  onBack: () => void;
+  onPause: () => void;
+  onResume: () => void;
   onRetry: () => void;
 }) {
   const temp = extractTemp(result?.estimated_temp_range, dish.target);
   const currentColor = colorForTemp(temp);
   const onTarget = result !== null && Math.abs(temp - dish.target) <= 3;
-  const isActive = activity === "listening" || activity === "analyzing";
+  const isActive = activity === "listening" || activity === "analyzing" || activity === "permission";
+  const isPaused = activity === "paused";
 
   return (
-    <div
-      className="w-full min-h-screen relative overflow-hidden flex flex-col"
-      style={{ background: "#0b0d11", color: "#fff" }}
-    >
-      {/* Zone-tinted glow from top */}
+    <div className="w-full min-h-screen relative overflow-hidden flex flex-col" style={{ background: "#0b0d11", color: "#fff" }}>
+      {/* Zone glow */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
           background: `radial-gradient(ellipse 80% 55% at 50% 18%, ${currentColor} 0%, transparent 60%)`,
-          opacity: 0.14,
-          transition: "background 400ms linear",
+          opacity: isActive ? 0.14 : 0.06,
+          transition: "background 400ms linear, opacity 400ms",
         }}
       />
 
-      {/* On-target flash */}
       <OnTargetFlash visible={onTarget} />
 
-      {/* Mic + listening bars */}
-      <div className="relative z-10 flex justify-center items-center gap-3.5 pt-16 pb-2">
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-          <rect x="9" y="3" width="6" height="12" rx="3" fill="rgba(255,255,255,0.85)" />
-          <path d="M5 11a7 7 0 0014 0M12 18v3" stroke="rgba(255,255,255,0.85)" strokeWidth="2" strokeLinecap="round" fill="none" />
-        </svg>
-        <ListeningBars active={isActive} />
+      {/* Top bar: back button + mic/bars */}
+      <div className="relative z-10 flex items-center justify-between px-5 pt-12 pb-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-sm text-white/55 hover:text-white/80 transition-colors"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M11 4 L6 9 L11 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          戻る
+        </button>
+        <div className="flex items-center gap-3">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <rect x="9" y="3" width="6" height="12" rx="3" fill="rgba(255,255,255,0.85)" />
+            <path d="M5 11a7 7 0 0014 0M12 18v3" stroke="rgba(255,255,255,0.85)" strokeWidth="2" strokeLinecap="round" fill="none" />
+          </svg>
+          <ListeningBars active={isActive} />
+        </div>
       </div>
 
-      {/* Meter + huge temp overlay */}
-      <div className="relative z-10 flex justify-center pt-4">
+      {/* Meter */}
+      <div className="relative z-10 flex justify-center pt-2">
         <div className="relative w-full max-w-[400px]">
           <MeterSVG temp={temp} target={dish.target} />
-          {/* Huge temperature number in dead space */}
-          <div
-            className="absolute left-0 right-0 flex flex-col items-center"
-            style={{ top: "54%" }}
-          >
+          <div className="absolute left-0 right-0 flex flex-col items-center" style={{ top: "54%" }}>
             <div
               style={{
                 fontSize: 100,
@@ -449,6 +446,7 @@ function MeasureScreen({
                 color: currentColor,
                 textShadow: `0 0 40px ${currentColor}55`,
                 transition: "color 300ms linear",
+                opacity: isPaused ? 0.6 : 1,
               }}
             >
               {result ? Math.round(temp) : "--"}
@@ -461,17 +459,17 @@ function MeasureScreen({
       </div>
 
       {/* Delta indicator */}
-      <div className="relative z-10 flex justify-center items-center min-h-10 -mt-2">
+      <div className="relative z-10 flex justify-center items-center min-h-8 -mt-2">
         {result && <DeltaIndicator temp={temp} target={dish.target} />}
       </div>
 
       {/* Target row */}
-      <div className="relative z-10 flex justify-center items-center gap-2.5 mt-3">
-        <svg width="22" height="22" viewBox="0 0 22 22">
+      <div className="relative z-10 flex justify-center items-center gap-2.5 mt-2">
+        <svg width="20" height="20" viewBox="0 0 22 22">
           <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" />
           <circle cx="11" cy="11" r="3" fill="#fff" />
         </svg>
-        <div style={{ fontSize: 28, fontWeight: 700, color: "rgba(255,255,255,0.9)", fontVariantNumeric: "tabular-nums" }}>
+        <div style={{ fontSize: 26, fontWeight: 700, color: "rgba(255,255,255,0.9)", fontVariantNumeric: "tabular-nums" }}>
           {dish.range ? `${dish.range[0]}→${dish.range[1]}°` : `${dish.target}°`}
         </div>
       </div>
@@ -500,15 +498,15 @@ function MeasureScreen({
 
       {/* Error message */}
       {errorMessage && (
-        <div className="relative z-10 mx-6 mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70 text-center">
+        <div className="relative z-10 mx-6 mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70 text-center">
           {errorMessage}
         </div>
       )}
 
       <div className="flex-1" />
 
-      {/* Stop / retry button */}
-      <div className="relative z-10 flex justify-center pb-14">
+      {/* Bottom action button */}
+      <div className="relative z-10 flex justify-center pb-12">
         {activity === "error" ? (
           <button
             type="button"
@@ -521,17 +519,29 @@ function MeasureScreen({
         ) : (
           <button
             type="button"
-            onClick={onStop}
+            onClick={isPaused ? onResume : onPause}
             className="flex items-center justify-center"
             style={{
               width: 88, height: 88, borderRadius: 9999,
               background: "transparent",
-              border: "4px solid rgba(255,255,255,0.9)",
+              border: `4px solid ${isPaused ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.9)"}`,
               cursor: "pointer",
               boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+              transition: "border-color 300ms",
             }}
           >
-            <div style={{ width: 36, height: 36, borderRadius: 8, background: "oklch(0.68 0.19 25)" }} />
+            {isPaused ? (
+              // Play ▶
+              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                <path d="M9 5 L23 14 L9 23 Z" fill="rgba(255,255,255,0.85)" />
+              </svg>
+            ) : (
+              // Pause ⏸
+              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                <rect x="6" y="5" width="6" height="18" rx="2" fill="rgba(255,255,255,0.85)" />
+                <rect x="16" y="5" width="6" height="18" rx="2" fill="rgba(255,255,255,0.85)" />
+              </svg>
+            )}
           </button>
         )}
       </div>
@@ -556,6 +566,7 @@ export default function Home() {
 
   const streamRef = useRef<MediaStream | null>(null);
   const loopActiveRef = useRef(false);
+  const pendingCallRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -564,8 +575,10 @@ export default function Home() {
     };
   }, []);
 
+  // Overlap: fire API in background, immediately start next recording
   async function runAnalysisLoop(stream: MediaStream) {
     loopActiveRef.current = true;
+    pendingCallRef.current = false;
     let consecutiveErrors = 0;
     const MAX_ERRORS = 3;
 
@@ -574,21 +587,37 @@ export default function Home() {
         setActivity("listening");
         const { blob, mimeType } = await recordAudioChunk(stream, CHUNK_DURATION_MS);
         if (!loopActiveRef.current) break;
-        setActivity("analyzing");
-        const next = await analyzeAudioChunk(blob, mimeType);
-        if (!loopActiveRef.current) break;
-        setResult(next);
-        setErrorMessage("");
-        consecutiveErrors = 0;
+
+        // Fire API call in background — don't await, overlap with next recording
+        if (!pendingCallRef.current) {
+          pendingCallRef.current = true;
+          analyzeAudioChunk(blob, mimeType)
+            .then((next) => {
+              pendingCallRef.current = false;
+              if (!loopActiveRef.current) return;
+              setResult(next);
+              setErrorMessage("");
+              consecutiveErrors = 0;
+            })
+            .catch((error) => {
+              pendingCallRef.current = false;
+              consecutiveErrors++;
+              if (consecutiveErrors >= MAX_ERRORS) {
+                loopActiveRef.current = false;
+                setActivity("error");
+                setErrorMessage(error instanceof Error ? error.message : "判定に失敗しました。");
+              }
+            });
+        }
+        // Loop continues immediately → next recording starts without waiting for API
       } catch (error) {
         consecutiveErrors++;
         if (consecutiveErrors >= MAX_ERRORS) {
           loopActiveRef.current = false;
           setActivity("error");
-          setErrorMessage(error instanceof Error ? error.message : "判定に失敗しました。");
+          setErrorMessage(error instanceof Error ? error.message : "録音に失敗しました。");
           break;
         }
-        // 一時的なエラー — ループを継続
       }
     }
   }
@@ -620,12 +649,40 @@ export default function Home() {
     }
   }
 
-  function stopMeasurement() {
+  function pauseMeasurement() {
     loopActiveRef.current = false;
+    pendingCallRef.current = false;
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    setActivity("paused");
+  }
+
+  async function resumeMeasurement() {
+    if (!selectedDish) return;
+    setErrorMessage("");
+    setActivity("permission");
+    try {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+      streamRef.current = stream;
+      await runAnalysisLoop(stream);
+    } catch (error) {
+      loopActiveRef.current = false;
+      setActivity("error");
+      setErrorMessage(error instanceof Error ? error.message : "判定に失敗しました。");
+    }
+  }
+
+  function goBack() {
+    loopActiveRef.current = false;
+    pendingCallRef.current = false;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     setActivity("idle");
     setScreen("select");
+    setResult(null);
     setErrorMessage("");
   }
 
@@ -639,7 +696,9 @@ export default function Home() {
       result={result}
       activity={activity}
       errorMessage={errorMessage}
-      onStop={stopMeasurement}
+      onBack={goBack}
+      onPause={pauseMeasurement}
+      onResume={() => void resumeMeasurement()}
       onRetry={() => selectedDish && void startMeasurement(selectedDish)}
     />
   );
