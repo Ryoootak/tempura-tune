@@ -385,7 +385,8 @@ export default function Home() {
     }
 
     return Boolean(
-      navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined",
+      typeof navigator.mediaDevices?.getUserMedia === "function" &&
+        typeof MediaRecorder !== "undefined",
     );
   });
 
