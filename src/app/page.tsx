@@ -51,11 +51,11 @@ const ZONE_NEEDLE_TEMP: Record<string, number> = {
 
 // Zone display data: English name + onomatopoeia
 const ZONE_DISPLAY: Record<string, { name: string; onomato: string }> = {
-  TOO_LOW:  { name: "Too Low",  onomato: "Boko... Boko..." },
-  LOW:      { name: "Low",      onomato: "Shuwa-shuwa" },
-  MEDIUM:   { name: "Medium",   onomato: "Pichi-pichi" },
-  HIGH:     { name: "High",     onomato: "Chiri-chiri" },
-  TOO_HIGH: { name: "Too High", onomato: "Bachi! Pan!" },
+  TOO_LOW:  { name: "Too Low",  onomato: "ボコ…ボコ…" },
+  LOW:      { name: "Low",      onomato: "シュワシュワ" },
+  MEDIUM:   { name: "Medium",   onomato: "ピチピチ" },
+  HIGH:     { name: "High",     onomato: "チリチリ" },
+  TOO_HIGH: { name: "Too High", onomato: "バチ！パン！" },
 };
 
 const ZONE_FOR_MODE: Record<"low" | "medium" | "high", AnalysisResult["current_zone"]> = {
