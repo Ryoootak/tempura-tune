@@ -48,11 +48,13 @@ App Storeに出す。ポートフォリオ作品として運用。
 
 ### Phase 5.5: Teachable Machine オンデバイス推論への移行
 ※ 詳細は `docs/PHASE_5.5.md` を参照
-- [ ] 温度計で実測しながら各ゾーンの油音を録音（各クラス60秒以上）
+- クラス設計: TOO_LOW / 140°C / 150°C / 160°C / 170°C / 180°C / 190°C / [TOO_HIGH] / BACKGROUND
+- UI表示: 数値クラスは「約170°C」形式、境界のみ "Too Low" / "Too High"
+- [ ] 温度計で実測しながら各温度の油音を録音（各クラス60秒以上）
 - [ ] Google Teachable Machine でモデル作成・学習・エクスポート
 - [ ] @tensorflow/tfjs を導入し analyzeAudioChunk() を差し替え
-- [ ] 実油テストで精度検証（目標: 各クラス80%以上）
-- [ ] メーター針のリアルタイム感改善（confidence活用）
+- [ ] 実油テストで精度検証（目標: 各クラス75%以上）
+- [ ] confidence スコアでメーター針を補間しなめらかに動かす
 - [ ] オフライン動作確認・Vercelデプロイ
 
 ### Phase 6: Vercelデプロイ
