@@ -1,12 +1,13 @@
 # TempuraTune 進捗管理
 
 ## 現在のPhase
-**Phase 4 完了(確認待ち)**
+**Phase 5.5 未着手（温度計・実油録音待ち）**
 
 ## 現在の構成方針
 - リポジトリ名は `tempura-tune`
 - アプリ表示名は `TempuraTune`
 - デザイン参照元は `design/TempuraTune.html`
+- 推論方式: 現在 Gemini API → Phase 5.5 で Teachable Machine に移行予定
 
 ## 各Phaseのステータス
 - Phase 0: ✅ 完了
@@ -15,7 +16,7 @@
 - Phase 3: ✅ 完了
 - Phase 4: ✅ 完了
 - Phase 5: ✅ 完了
-- Phase 5.5: ⚪ 未着手
+- Phase 5.5: ⚪ 未着手（温度計購入・実油録音が前提条件）
 - Phase 6: ✅ 完了（Phase 4直後に実施）
 - Phase 7: ⚪ 未着手
 
@@ -60,10 +61,23 @@
 - metadata にアイコン設定を反映
 - `src/app/page.tsx` に準リアルタイムMVP UIを実装
 - 料理選択 / マイク許可 / 2秒録音ループ / API送信 / 結果表示を接続
-- `npm run lint` と `npx next build --webpack` を通過
 - Phase 4 完了、確認待ち
 
+### 2026-04-23
+- Claude Design バンドルを移植、UIを全面刷新（Phase 5 開始）
+- フルモデルチェンジ: 5段階ゾーン ＆ 3種プリセット（低温/中温/高温）方式へ
+- 音響物理ベースのシステムプロンプトに刷新（周波数・バブル密度・テクスチャ定義）
+- Screen 1: 2×3グリッド → 3枚フル幅横長カード
+- Screen 2: StatusBadge / "Now Tuning" / 判定ピルバッジ（↑ HEAT UP / ✓ ON TARGET / ↓ COOL DOWN）
+- acoustic_reasoning を削除（UIをシンプルに保つ判断）
+- 擬音語を日本語カタカナに統一（ピチピチ・チリチリ等）
+- API動作確認済み（実機テスト完了）
+- Phase 5 完了
+- Phase 5.5 工程表（docs/PHASE_5.5.md）作成
+- ROADMAP.md / PROGRESS.md を最新状態に更新
+
 ## 次のアクション
-- Phase 4 の確認
-- 私のOK後 Phase 5 でUI改善へ
-- 実音声検証はMVP後に実施
+- 温度計を購入
+- 実油で各ゾーン（TOO_LOW〜TOO_HIGH）の音を録音
+- Google Teachable Machine でモデル作成
+- Phase 5.5 開始（詳細は docs/PHASE_5.5.md 参照）
