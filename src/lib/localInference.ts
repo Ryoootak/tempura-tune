@@ -4,6 +4,11 @@ export type EIResult = {
   results: { label: string; value: number }[];
 };
 
+export type AudioFeatures = {
+  rms: number;
+  peak: number;
+};
+
 export type EIProperties = {
   frequency?: number;
   frame_sample_count?: number;
@@ -95,6 +100,41 @@ export function getModelProperties(): EIProperties | null {
   return (window as WindowWithEIModule).Module?.get_properties?.() ?? null;
 }
 
+export function getAudioFeatures(samples: Float32Array): AudioFeatures {
+  if (samples.length === 0) return { rms: 0, peak: 0 };
+
+  let sumSquares = 0;
+  let peak = 0;
+  for (const sample of samples) {
+    const abs = Math.abs(sample);
+    sumSquares += sample * sample;
+    if (abs > peak) peak = abs;
+  }
+
+  return {
+    rms: Math.sqrt(sumSquares / samples.length),
+    peak,
+  };
+}
+
+export function resampleLinear(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+  if (samples.length === 0 || Math.abs(fromRate - toRate) < 1) return samples;
+
+  const outputLength = Math.max(1, Math.round(samples.length * toRate / fromRate));
+  const output = new Float32Array(outputLength);
+  const ratio = (samples.length - 1) / Math.max(1, outputLength - 1);
+
+  for (let i = 0; i < outputLength; i++) {
+    const sourceIndex = i * ratio;
+    const leftIndex = Math.floor(sourceIndex);
+    const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
+    const fraction = sourceIndex - leftIndex;
+    output[i] = samples[leftIndex] + (samples[rightIndex] - samples[leftIndex]) * fraction;
+  }
+
+  return output;
+}
+
 export function classifyContinuous(samples: Float32Array): EIResult {
   const Module = (window as WindowWithEIModule).Module;
   if (!Module) throw new Error("Edge Impulse Module が初期化されていません");
@@ -110,9 +150,13 @@ export function classifyContinuous(samples: Float32Array): EIResult {
 
   const numBytes = samples.length * 4;
   const ptr = Module._malloc(numBytes);
+  const scaledSamples = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    scaledSamples[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
+  }
   // _malloc後にHEAPU8を再参照（メモリ拡張対策）
   new Uint8Array(Module.HEAPU8.buffer, ptr, numBytes).set(
-    new Uint8Array(samples.buffer, samples.byteOffset, numBytes)
+    new Uint8Array(scaledSamples.buffer, scaledSamples.byteOffset, numBytes)
   );
   const ret = Module.run_classifier_continuous(ptr, samples.length, false, false);
   Module._free(ptr);

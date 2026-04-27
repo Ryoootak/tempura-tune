@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { loadModel, classifyContinuous, getModelProperties, resetClassifier, EILabel } from "@/lib/localInference";
+import { loadModel, classifyContinuous, getAudioFeatures, getModelProperties, resetClassifier, resampleLinear, EILabel } from "@/lib/localInference";
 import { startCapture, stopCapture } from "@/lib/audioCapture";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -281,6 +281,10 @@ function MeasureScreen({
     topValue: number;
     modelFrequency?: number;
     sliceSize?: number;
+    rms: number;
+    peak: number;
+    baselineRms: number;
+    activeRms: number;
     error: string;
   } | null;
   onBack: () => void;
@@ -434,6 +438,9 @@ function MeasureScreen({
                 <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
                   TOP: {debugInfo.topLabel || "-"} {(debugInfo.topValue * 100).toFixed(0)}%
                 </div>
+                <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
+                  RMS:{debugInfo.rms.toFixed(4)}  Peak:{debugInfo.peak.toFixed(3)}  Base:{debugInfo.baselineRms.toFixed(4)}  Gate:{debugInfo.activeRms.toFixed(4)}
+                </div>
                 {debugInfo.error && (
                   <div style={{ color: "oklch(0.75 0.18 35)", marginBottom: 6, wordBreak: "break-all" }}>
                     ERR: {debugInfo.error}
@@ -567,6 +574,10 @@ export default function Home() {
     topValue: number;
     modelFrequency?: number;
     sliceSize?: number;
+    rms: number;
+    peak: number;
+    baselineRms: number;
+    activeRms: number;
     error: string;
   } | null>(null);
 
@@ -577,8 +588,12 @@ export default function Home() {
   const noiseReadyRef = useRef(false);
   const calibCountRef = useRef(0);
   const frameCountRef = useRef(0);
+  const baselineRmsRef = useRef(0);
+  const baselineSamplesRef = useRef<number[]>([]);
   const COMMIT_FRAMES = 3;
-  const CALIBRATE_FRAMES = 3;
+  const CALIBRATE_FRAMES = 12;
+  const MIN_ACTIVE_RMS = 0.006;
+  const BASELINE_MULTIPLIER = 2.2;
 
   useEffect(() => {
     return () => {
@@ -599,6 +614,8 @@ export default function Home() {
     noiseReadyRef.current = false;
     calibCountRef.current = 0;
     frameCountRef.current = 0;
+    baselineRmsRef.current = 0;
+    baselineSamplesRef.current = [];
     try {
       await loadModel();
       resetClassifier();
@@ -608,11 +625,15 @@ export default function Home() {
         if (!loopActiveRef.current) return;
         frameCountRef.current++;
         try {
-          const { results } = classifyContinuous(samples);
+          const modelSampleRate = modelProperties?.frequency ?? sampleRate;
+          const modelSamples = resampleLinear(samples, sampleRate, modelSampleRate);
+          const features = getAudioFeatures(samples);
+          const { results } = classifyContinuous(modelSamples);
           if (results.length === 0) throw new Error("分類結果が空です");
 
           const top = results.reduce((a, b) => (a.value > b.value ? a : b));
           const label = top.label as EILabel;
+          const activeRms = Math.max(MIN_ACTIVE_RMS, baselineRmsRef.current * BASELINE_MULTIPLIER);
 
           // デバッグ情報を更新
           if (frameCountRef.current % 5 === 0) {
@@ -624,27 +645,40 @@ export default function Home() {
               topValue: top.value,
               modelFrequency: modelProperties?.frequency,
               sliceSize: modelProperties?.slice_size,
+              rms: features.rms,
+              peak: features.peak,
+              baselineRms: baselineRmsRef.current,
+              activeRms,
               error: "",
             });
           }
 
-          // ── キャリブレーション: モデルが有効スコアを返し始めるまで待つ ──
+          // ── キャリブレーション: 換気扇・環境音の音量ベースラインを測る ──
           if (!noiseReadyRef.current) {
-            const hasValidScore = results.some((score) => score.value > 0);
-            if (hasValidScore) {
-              calibCountRef.current++;
-              if (calibCountRef.current >= CALIBRATE_FRAMES) {
-                noiseReadyRef.current = true;
-                pendingRef.current = { state: "", count: 0 };
-                setActivity("listening");
-              }
-            } else {
-              calibCountRef.current = 0;
+            baselineSamplesRef.current.push(features.rms);
+            calibCountRef.current++;
+
+            if (calibCountRef.current >= CALIBRATE_FRAMES) {
+              const sorted = [...baselineSamplesRef.current].sort((a, b) => a - b);
+              baselineRmsRef.current = sorted[Math.floor(sorted.length / 2)] ?? 0;
+              noiseReadyRef.current = true;
+              pendingRef.current = { state: "", count: 0 };
+              setActivity("listening");
             }
             return;
           }
 
           // ── 測定フェーズ ──────────────────────────────────────
+          if (features.rms < activeRms) {
+            pendingRef.current = { state: "noise", count: pendingRef.current.state === "noise" ? pendingRef.current.count + 1 : 1 };
+            if (pendingRef.current.count >= COMMIT_FRAMES) {
+              setNoOil(true);
+              setWeakSignal(false);
+              setCurrentZone(null);
+            }
+            return;
+          }
+
           const threshold = THRESHOLD[label] ?? 0.60;
           const candidate =
             top.value < threshold        ? "weak"
@@ -689,6 +723,10 @@ export default function Home() {
             topValue: 0,
             modelFrequency: modelProperties?.frequency,
             sliceSize: modelProperties?.slice_size,
+            rms: 0,
+            peak: 0,
+            baselineRms: baselineRmsRef.current,
+            activeRms: Math.max(MIN_ACTIVE_RMS, baselineRmsRef.current * BASELINE_MULTIPLIER),
             error: msg,
           });
         }
