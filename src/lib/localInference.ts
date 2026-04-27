@@ -148,11 +148,16 @@ export function classifyContinuous(samples: Float32Array): EIResult {
     throw new Error("run_classifier_continuous が Module に存在しません。利用可能なキー: " + Object.keys(Module).filter(k => !k.startsWith("_")).slice(0, 20).join(", "));
   }
 
-  const numBytes = samples.length * 4;
+  // Edge Impulse は int16 レンジ（-32768〜32767）の float を期待するためスケーリング
+  const scaled = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    scaled[i] = samples[i] * 32768;
+  }
+  const numBytes = scaled.length * 4;
   const ptr = Module._malloc(numBytes);
-  // _malloc後にHEAPU8を再参照（メモリ拡張対策）。float32 [-1,1] をそのまま渡す
+  // _malloc後にHEAPU8を再参照（メモリ拡張対策）
   new Uint8Array(Module.HEAPU8.buffer, ptr, numBytes).set(
-    new Uint8Array(samples.buffer, samples.byteOffset, numBytes)
+    new Uint8Array(scaled.buffer, scaled.byteOffset, numBytes)
   );
   const ret = Module.run_classifier_continuous(ptr, samples.length, false, false);
   Module._free(ptr);
