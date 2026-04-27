@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { loadModel, classifyContinuous, EILabel } from "@/lib/localInference";
+import { loadModel, classifyContinuous, getModelProperties, resetClassifier, EILabel } from "@/lib/localInference";
 import { startCapture, stopCapture } from "@/lib/audioCapture";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -260,6 +260,7 @@ function MeasureScreen({
   activity,
   errorMessage,
   onTargetFlash,
+  debugInfo,
   onBack,
   onStart,
   onPause,
@@ -272,6 +273,16 @@ function MeasureScreen({
   activity: ActivityState;
   errorMessage: string;
   onTargetFlash: boolean;
+  debugInfo: {
+    scores: { label: string; value: number }[];
+    sampleRate: number;
+    frameCount: number;
+    topLabel: string;
+    topValue: number;
+    modelFrequency?: number;
+    sliceSize?: number;
+    error: string;
+  } | null;
   onBack: () => void;
   onStart: () => void;
   onPause: () => void;
@@ -391,7 +402,7 @@ function MeasureScreen({
             </div>
           </div>
         ) : activity === "calibrating" ? (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ textAlign: "center", width: "100%" }}>
             <div
               style={{
                 fontSize: 20,
@@ -402,9 +413,53 @@ function MeasureScreen({
             >
               換気扇の音を検知中...
             </div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.22)", marginTop: 10 }}>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.22)", marginTop: 8 }}>
               換気扇をつけてから測定してください
             </div>
+            {/* デバッグパネル */}
+            {debugInfo && (
+              <div style={{
+                marginTop: 24,
+                padding: "12px 16px",
+                background: "rgba(255,255,255,0.05)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: 12,
+                textAlign: "left",
+                fontSize: 11,
+                fontFamily: "monospace",
+              }}>
+                <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
+                  SR:{debugInfo.sampleRate}Hz  M:{debugInfo.modelFrequency ?? "-"}Hz  Slice:{debugInfo.sliceSize ?? "-"}  F:{debugInfo.frameCount}
+                </div>
+                <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
+                  TOP: {debugInfo.topLabel || "-"} {(debugInfo.topValue * 100).toFixed(0)}%
+                </div>
+                {debugInfo.error && (
+                  <div style={{ color: "oklch(0.75 0.18 35)", marginBottom: 6, wordBreak: "break-all" }}>
+                    ERR: {debugInfo.error}
+                  </div>
+                )}
+                {debugInfo.scores.map(s => (
+                  <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                    <span style={{ width: 36, color: s.label === "noise" ? "oklch(0.78 0.17 145)" : "rgba(255,255,255,0.5)" }}>
+                      {s.label}
+                    </span>
+                    <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{
+                        height: "100%",
+                        width: `${(s.value * 100).toFixed(0)}%`,
+                        background: s.label === "noise" ? "oklch(0.78 0.17 145)" : "rgba(255,255,255,0.3)",
+                        borderRadius: 3,
+                        transition: "width 200ms",
+                      }} />
+                    </div>
+                    <span style={{ width: 34, textAlign: "right", color: "rgba(255,255,255,0.4)" }}>
+                      {(s.value * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : isActive ? (
           <div
@@ -504,6 +559,16 @@ export default function Home() {
   const [weakSignal, setWeakSignal] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [onTargetFlash, setOnTargetFlash] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<{
+    scores: { label: string; value: number }[];
+    sampleRate: number;
+    frameCount: number;
+    topLabel: string;
+    topValue: number;
+    modelFrequency?: number;
+    sliceSize?: number;
+    error: string;
+  } | null>(null);
 
   const loopActiveRef = useRef(false);
   const prevZoneRef = useRef<EIZone | null>(null);
@@ -511,6 +576,7 @@ export default function Home() {
   const pendingRef = useRef<{ state: string; count: number }>({ state: "", count: 0 });
   const noiseReadyRef = useRef(false);
   const calibCountRef = useRef(0);
+  const frameCountRef = useRef(0);
   const COMMIT_FRAMES = 3;
   const CALIBRATE_FRAMES = 3;
 
@@ -527,23 +593,45 @@ export default function Home() {
     setNoOil(false);
     setWeakSignal(false);
     setCurrentZone(null);
+    setDebugInfo(null);
     prevZoneRef.current = null;
     pendingRef.current = { state: "", count: 0 };
     noiseReadyRef.current = false;
     calibCountRef.current = 0;
+    frameCountRef.current = 0;
     try {
       await loadModel();
+      resetClassifier();
+      const modelProperties = getModelProperties();
       loopActiveRef.current = true;
-      await startCapture((samples) => {
+      await startCapture((samples, sampleRate) => {
         if (!loopActiveRef.current) return;
+        frameCountRef.current++;
         try {
           const { results } = classifyContinuous(samples);
+          if (results.length === 0) throw new Error("分類結果が空です");
+
           const top = results.reduce((a, b) => (a.value > b.value ? a : b));
           const label = top.label as EILabel;
 
-          // ── キャリブレーション: noiseを検知するまで判定しない ──
+          // デバッグ情報を更新
+          if (frameCountRef.current % 5 === 0) {
+            setDebugInfo({
+              scores: results,
+              sampleRate,
+              frameCount: frameCountRef.current,
+              topLabel: top.label,
+              topValue: top.value,
+              modelFrequency: modelProperties?.frequency,
+              sliceSize: modelProperties?.slice_size,
+              error: "",
+            });
+          }
+
+          // ── キャリブレーション: モデルが有効スコアを返し始めるまで待つ ──
           if (!noiseReadyRef.current) {
-            if (top.label === "noise" && top.value >= THRESHOLD.noise) {
+            const hasValidScore = results.some((score) => score.value > 0);
+            if (hasValidScore) {
               calibCountRef.current++;
               if (calibCountRef.current >= CALIBRATE_FRAMES) {
                 noiseReadyRef.current = true;
@@ -557,8 +645,9 @@ export default function Home() {
           }
 
           // ── 測定フェーズ ──────────────────────────────────────
+          const threshold = THRESHOLD[label] ?? 0.60;
           const candidate =
-            top.value < THRESHOLD[label] ? "weak"
+            top.value < threshold        ? "weak"
             : label === "noise"          ? "noise"
             : label;
 
@@ -590,7 +679,19 @@ export default function Home() {
             prevZoneRef.current = zone;
             setCurrentZone(zone);
           }
-        } catch { /* フレーム単位のエラーは無視 */ }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setDebugInfo(prev => prev ? { ...prev, error: msg } : {
+            scores: [],
+            sampleRate: 0,
+            frameCount: frameCountRef.current,
+            topLabel: "",
+            topValue: 0,
+            modelFrequency: modelProperties?.frequency,
+            sliceSize: modelProperties?.slice_size,
+            error: msg,
+          });
+        }
       });
       setActivity("calibrating");
     } catch (error) {
@@ -618,6 +719,7 @@ export default function Home() {
     setNoOil(false);
     setWeakSignal(false);
     setErrorMessage("");
+    setDebugInfo(null);
     setScreen("guide");
   }
 
@@ -643,6 +745,7 @@ export default function Home() {
       activity={activity}
       errorMessage={errorMessage}
       onTargetFlash={onTargetFlash}
+      debugInfo={debugInfo}
       onBack={goBack}
       onStart={() => void startRecording()}
       onPause={pause}

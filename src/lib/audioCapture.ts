@@ -2,15 +2,22 @@ let audioContext: AudioContext | null = null;
 let processor: ScriptProcessorNode | null = null;
 let captureStream: MediaStream | null = null;
 
-export async function startCapture(onSamples: (samples: Float32Array) => void): Promise<void> {
+export async function startCapture(onSamples: (samples: Float32Array, sampleRate: number) => void): Promise<void> {
   captureStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1 },
+    audio: {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
   });
   audioContext = new AudioContext({ sampleRate: 48000 });
+  const actualRate = audioContext.sampleRate;
+  console.log("[AudioCapture] AudioContext.sampleRate =", actualRate);
   const source = audioContext.createMediaStreamSource(captureStream);
   processor = audioContext.createScriptProcessor(4096, 1, 1);
   processor.onaudioprocess = (e) => {
-    onSamples(new Float32Array(e.inputBuffer.getChannelData(0)));
+    onSamples(new Float32Array(e.inputBuffer.getChannelData(0)), actualRate);
   };
   source.connect(processor);
   processor.connect(audioContext.destination);
