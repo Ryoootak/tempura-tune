@@ -453,15 +453,21 @@ function MeasureScreen({
           </div>
         ) : noOil && activity === "listening" ? (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>🫕</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "rgba(255,255,255,0.45)" }}>
-              油が静かです
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+              <AudioBars level={audioLevel} color="rgba(255,255,255,0.3)" />
             </div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>
-              箸を油に入れてください
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                color: "rgba(255,255,255,0.4)",
+                animation: "tunePulse 2s ease-in-out infinite",
+              }}
+            >
+              測定中...
             </div>
-            <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
-              <AudioBars level={audioLevel} color="rgba(255,255,255,0.25)" />
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.22)", marginTop: 8 }}>
+              箸を油に静かに入れてください
             </div>
           </div>
         ) : activity === "calibrating" ? (
