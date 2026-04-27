@@ -26,6 +26,49 @@ type DebugInfo = {
   error: string;
 };
 
+// ─── Audio level bars ─────────────────────────────────────────
+function AudioBars({ level, color }: { level: number; color: string }) {
+  const heights = [0.55, 1.0, 0.75, 0.9, 0.6];
+  return (
+    <div style={{ display: "flex", gap: 5, alignItems: "flex-end", height: 32 }}>
+      {heights.map((mult, i) => (
+        <div
+          key={i}
+          style={{
+            width: 5,
+            borderRadius: 3,
+            background: color,
+            height: `${Math.max(16, Math.min(100, level * mult * 100))}%`,
+            transition: "height 80ms ease",
+            opacity: level > 0.02 ? 0.7 : 0.2,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ─── Scan ring ────────────────────────────────────────────────
+function ScanRing({ color, active }: { color: string; active: boolean }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        width: 220,
+        height: 220,
+        borderRadius: "50%",
+        border: `1.5px solid ${color}`,
+        opacity: active ? 0.2 : 0,
+        animation: active ? "spin 10s linear infinite" : "none",
+        transition: "opacity 600ms ease",
+        backgroundImage: `conic-gradient(${color} 0deg, transparent 60deg, transparent 360deg)`,
+        WebkitMaskImage: "none",
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
 // ─── Zone config ──────────────────────────────────────────────
 const ZONE_CONFIG: Record<EIZone, {
   text: string;
@@ -279,6 +322,7 @@ function MeasureScreen({
   errorMessage,
   onTargetFlash,
   debugInfo,
+  audioLevel,
   onBack,
   onStart,
   onPause,
@@ -292,6 +336,7 @@ function MeasureScreen({
   errorMessage: string;
   onTargetFlash: boolean;
   debugInfo: DebugInfo | null;
+  audioLevel: number;
   onBack: () => void;
   onStart: () => void;
   onPause: () => void;
@@ -356,17 +401,20 @@ function MeasureScreen({
       >
         {cfg && activity === "listening" ? (
           <>
-            <div
-              style={{
-                fontSize: 80,
-                fontWeight: 900,
-                color: cfg.color,
-                textShadow: `0 0 80px ${cfg.color}`,
-                letterSpacing: -2,
-                transition: "color 400ms ease, text-shadow 400ms ease",
-              }}
-            >
-              {cfg.text}
+            <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <ScanRing color={cfg.color} active={true} />
+              <div
+                style={{
+                  fontSize: 80,
+                  fontWeight: 900,
+                  color: cfg.color,
+                  textShadow: `0 0 80px ${cfg.color}`,
+                  letterSpacing: -2,
+                  transition: "color 600ms ease, text-shadow 600ms ease",
+                }}
+              >
+                {cfg.text}
+              </div>
             </div>
             <div style={{ fontSize: 18, color: "rgba(255,255,255,0.5)", fontWeight: 600 }}>
               {cfg.sub}
@@ -382,10 +430,13 @@ function MeasureScreen({
                 fontSize: 15,
                 fontWeight: 800,
                 letterSpacing: 0.3,
-                transition: "all 300ms",
+                transition: "all 400ms",
               }}
             >
               {cfg.judgment}
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <AudioBars level={audioLevel} color={cfg.color} />
             </div>
           </>
         ) : weakSignal && activity === "listening" ? (
@@ -409,9 +460,15 @@ function MeasureScreen({
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>
               箸を油に入れてください
             </div>
+            <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
+              <AudioBars level={audioLevel} color="rgba(255,255,255,0.25)" />
+            </div>
           </div>
         ) : activity === "calibrating" ? (
           <div style={{ textAlign: "center", width: "100%" }}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+              <AudioBars level={audioLevel} color="rgba(255,255,255,0.35)" />
+            </div>
             <div
               style={{
                 fontSize: 20,
@@ -420,10 +477,10 @@ function MeasureScreen({
                 animation: "tunePulse 2s ease-in-out infinite",
               }}
             >
-              換気扇の音を検知中...
+              環境音を確認中...
             </div>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.22)", marginTop: 8 }}>
-              換気扇をつけてから測定してください
+              そのままお待ちください
             </div>
           </div>
         ) : isActive ? (
@@ -572,6 +629,7 @@ function MeasureScreen({
       <style>{`
         @keyframes dotPulse { 0%,100%{opacity:.4;transform:scale(.8)} 50%{opacity:1;transform:scale(1)} }
         @keyframes tunePulse { 0%,100%{opacity:.25} 50%{opacity:.75} }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
       `}</style>
     </div>
   );
@@ -587,9 +645,12 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
   const [onTargetFlash, setOnTargetFlash] = useState(false);
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
 
   const loopActiveRef = useRef(false);
   const prevZoneRef = useRef<EIZone | null>(null);
+  const zoneQueueRef = useRef<EIZone[]>([]);
+  const VOTE_WINDOW = 3;
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<{ state: string; count: number }>({ state: "", count: 0 });
   const noiseReadyRef = useRef(false);
@@ -618,7 +679,9 @@ export default function Home() {
     setWeakSignal(false);
     setCurrentZone(null);
     setDebugInfo(null);
+    setAudioLevel(0);
     prevZoneRef.current = null;
+    zoneQueueRef.current = [];
     pendingRef.current = { state: "", count: 0 };
     noiseReadyRef.current = false;
     calibCountRef.current = 0;
@@ -636,6 +699,9 @@ export default function Home() {
         frameCountRef.current++;
         try {
           const features = getAudioFeatures(samples);
+          // オーディオレベル更新（毎フレーム）
+          const normalizedLevel = Math.min(1, features.rms / 0.08);
+          setAudioLevel(normalizedLevel);
           const isSilentInput = features.peak < SILENT_PEAK;
           if (isSilentInput) {
             const activeRms = Math.max(MIN_ACTIVE_RMS, baselineRmsRef.current * BASELINE_MULTIPLIER);
@@ -751,13 +817,18 @@ export default function Home() {
             const zone = candidate as EIZone;
             setNoOil(false);
             setWeakSignal(false);
-            if (zone === "MID" && prevZoneRef.current !== "MID") {
+            // 多数決: 直近VOTE_WINDOWコミットの最多ゾーンを表示
+            zoneQueueRef.current = [...zoneQueueRef.current, zone].slice(-VOTE_WINDOW);
+            const counts: Partial<Record<EIZone, number>> = {};
+            for (const z of zoneQueueRef.current) counts[z] = (counts[z] ?? 0) + 1;
+            const voted = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]) as EIZone;
+            if (voted === "MID" && prevZoneRef.current !== "MID") {
               setOnTargetFlash(true);
               if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
               flashTimerRef.current = setTimeout(() => setOnTargetFlash(false), 1500);
             }
-            prevZoneRef.current = zone;
-            setCurrentZone(zone);
+            prevZoneRef.current = voted;
+            setCurrentZone(voted);
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -796,6 +867,7 @@ export default function Home() {
     loopActiveRef.current = false;
     stopCapture();
     noiseReadyRef.current = false;
+    setAudioLevel(0);
     setActivity("paused");
   }
 
@@ -836,6 +908,7 @@ export default function Home() {
       errorMessage={errorMessage}
       onTargetFlash={onTargetFlash}
       debugInfo={debugInfo}
+      audioLevel={audioLevel}
       onBack={goBack}
       onStart={() => void startRecording()}
       onPause={pause}
