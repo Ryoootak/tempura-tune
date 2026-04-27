@@ -6,7 +6,7 @@ import { startCapture, stopCapture } from "@/lib/audioCapture";
 
 // ─── Types ────────────────────────────────────────────────────
 type EIZone = "LOW" | "MID" | "HIGH";
-type ActivityState = "idle" | "permission" | "listening" | "paused" | "error";
+type ActivityState = "idle" | "permission" | "calibrating" | "listening" | "paused" | "error";
 
 // ─── Zone config ──────────────────────────────────────────────
 const ZONE_CONFIG: Record<EIZone, {
@@ -182,9 +182,10 @@ function GuideScreen({ onStart }: { onStart: () => void }) {
 // ─── Status badge ─────────────────────────────────────────────
 function StatusBadge({ activity }: { activity: ActivityState }) {
   const config: Record<string, { text: string; color: string; dot?: boolean }> = {
-    permission: { text: "Getting mic...", color: "rgba(255,255,255,0.5)" },
-    listening:  { text: "LISTENING",     color: "oklch(0.78 0.17 145)", dot: true },
-    paused:     { text: "PAUSED",        color: "rgba(255,255,255,0.35)" },
+    permission:   { text: "Getting mic...",  color: "rgba(255,255,255,0.5)" },
+    calibrating:  { text: "ENV CHECK",       color: "oklch(0.72 0.15 280)", dot: true },
+    listening:    { text: "LISTENING",       color: "oklch(0.78 0.17 145)", dot: true },
+    paused:       { text: "PAUSED",          color: "rgba(255,255,255,0.35)" },
   };
   const c = config[activity];
   if (!c) return <div style={{ height: 32 }} />;
@@ -277,7 +278,7 @@ function MeasureScreen({
   onResume: () => void;
   onRetry: () => void;
 }) {
-  const isActive = activity === "listening" || activity === "permission";
+  const isActive = activity === "listening" || activity === "permission" || activity === "calibrating";
   const isIdle = activity === "idle";
   const isPaused = activity === "paused";
   const cfg = zone ? ZONE_CONFIG[zone] : null;
@@ -333,7 +334,7 @@ function MeasureScreen({
         className="relative z-10 flex-1 flex flex-col items-center justify-center"
         style={{ padding: "0 32px", gap: 16 }}
       >
-        {cfg ? (
+        {cfg && activity === "listening" ? (
           <>
             <div
               style={{
@@ -367,7 +368,7 @@ function MeasureScreen({
               {cfg.judgment}
             </div>
           </>
-        ) : weakSignal && isActive ? (
+        ) : weakSignal && activity === "listening" ? (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.12em", color: "rgba(255,255,255,0.2)", marginBottom: 20 }}>
               ─ ─ ─ ─ ─ ─ ─ ─ ─
@@ -379,7 +380,7 @@ function MeasureScreen({
               換気扇をつけてから測定してみて
             </div>
           </div>
-        ) : noOil && isActive ? (
+        ) : noOil && activity === "listening" ? (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🫕</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: "rgba(255,255,255,0.45)" }}>
@@ -387,6 +388,22 @@ function MeasureScreen({
             </div>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>
               箸を油に入れてください
+            </div>
+          </div>
+        ) : activity === "calibrating" ? (
+          <div style={{ textAlign: "center" }}>
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                color: "rgba(255,255,255,0.4)",
+                animation: "tunePulse 2s ease-in-out infinite",
+              }}
+            >
+              換気扇の音を検知中...
+            </div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.22)", marginTop: 10 }}>
+              換気扇をつけてから測定してください
             </div>
           </div>
         ) : isActive ? (
@@ -492,7 +509,10 @@ export default function Home() {
   const prevZoneRef = useRef<EIZone | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<{ state: string; count: number }>({ state: "", count: 0 });
-  const COMMIT_FRAMES = 3; // 3フレーム（約750ms）連続で一致したら確定
+  const noiseReadyRef = useRef(false);
+  const calibCountRef = useRef(0);
+  const COMMIT_FRAMES = 3;
+  const CALIBRATE_FRAMES = 3;
 
   useEffect(() => {
     return () => {
@@ -509,6 +529,8 @@ export default function Home() {
     setCurrentZone(null);
     prevZoneRef.current = null;
     pendingRef.current = { state: "", count: 0 };
+    noiseReadyRef.current = false;
+    calibCountRef.current = 0;
     try {
       await loadModel();
       loopActiveRef.current = true;
@@ -519,23 +541,35 @@ export default function Home() {
           const top = results.reduce((a, b) => (a.value > b.value ? a : b));
           const label = top.label as EILabel;
 
-          // 候補ステートを決定
+          // ── キャリブレーション: noiseを検知するまで判定しない ──
+          if (!noiseReadyRef.current) {
+            if (top.label === "noise" && top.value >= THRESHOLD.noise) {
+              calibCountRef.current++;
+              if (calibCountRef.current >= CALIBRATE_FRAMES) {
+                noiseReadyRef.current = true;
+                pendingRef.current = { state: "", count: 0 };
+                setActivity("listening");
+              }
+            } else {
+              calibCountRef.current = 0;
+            }
+            return;
+          }
+
+          // ── 測定フェーズ ──────────────────────────────────────
           const candidate =
             top.value < THRESHOLD[label] ? "weak"
             : label === "noise"          ? "noise"
-            : label; // LOW / MID / HIGH
+            : label;
 
-          // 連続フレーム数をカウント、変わったらリセット
           if (pendingRef.current.state === candidate) {
             pendingRef.current.count++;
           } else {
             pendingRef.current = { state: candidate, count: 1 };
           }
 
-          // COMMIT_FRAMES 未満はまだ確定しない
           if (pendingRef.current.count < COMMIT_FRAMES) return;
 
-          // 確定: ステートを反映
           if (candidate === "weak") {
             setWeakSignal(true);
             setNoOil(false);
@@ -558,7 +592,7 @@ export default function Home() {
           }
         } catch { /* フレーム単位のエラーは無視 */ }
       });
-      setActivity("listening");
+      setActivity("calibrating");
     } catch (error) {
       loopActiveRef.current = false;
       stopCapture();
@@ -570,6 +604,7 @@ export default function Home() {
   function pause() {
     loopActiveRef.current = false;
     stopCapture();
+    noiseReadyRef.current = false;
     setActivity("paused");
   }
 
