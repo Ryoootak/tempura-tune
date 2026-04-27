@@ -150,13 +150,9 @@ export function classifyContinuous(samples: Float32Array): EIResult {
 
   const numBytes = samples.length * 4;
   const ptr = Module._malloc(numBytes);
-  const scaledSamples = new Float32Array(samples.length);
-  for (let i = 0; i < samples.length; i++) {
-    scaledSamples[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
-  }
-  // _malloc後にHEAPU8を再参照（メモリ拡張対策）
+  // _malloc後にHEAPU8を再参照（メモリ拡張対策）。float32 [-1,1] をそのまま渡す
   new Uint8Array(Module.HEAPU8.buffer, ptr, numBytes).set(
-    new Uint8Array(scaledSamples.buffer, scaledSamples.byteOffset, numBytes)
+    new Uint8Array(samples.buffer, samples.byteOffset, numBytes)
   );
   const ret = Module.run_classifier_continuous(ptr, samples.length, false, false);
   Module._free(ptr);
