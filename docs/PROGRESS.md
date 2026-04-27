@@ -1,13 +1,13 @@
 # TempuraTune 進捗管理
 
 ## 現在のPhase
-**Phase 5.5 未着手（温度計・実油録音待ち）**
+**Phase 5.5 完了 → Phase 7（Capacitor化）待ち**
 
 ## 現在の構成方針
 - リポジトリ名は `tempura-tune`
 - アプリ表示名は `TempuraTune`
-- デザイン参照元は `design/TempuraTune.html`
-- 推論方式: 現在 Gemini API → Phase 5.5 で Teachable Machine に移行予定
+- 推論方式: Edge Impulse WebAssembly（noise / LOW / MID / HIGH 4クラス）
+- UIは2画面構成: ガイド画面（Tune Up!）→ アンビエント計測画面
 
 ## 各Phaseのステータス
 - Phase 0: ✅ 完了
@@ -16,8 +16,8 @@
 - Phase 3: ✅ 完了
 - Phase 4: ✅ 完了
 - Phase 5: ✅ 完了
-- Phase 5.5: ⚪ 未着手（温度計購入・実油録音が前提条件）
-- Phase 6: ✅ 完了（Phase 4直後に実施）
+- Phase 5.5: ✅ 完了（Edge Impulse WebAssembly推論 + UI刷新）
+- Phase 6: ✅ 完了（Phase 4直後に実施。Vercel自動デプロイ稼働中）
 - Phase 7: ⚪ 未着手
 
 凡例: ✅完了 🟡進行中 ⚪未着手 🔴ブロック中
@@ -76,8 +76,20 @@
 - Phase 5.5 工程表（docs/PHASE_5.5.md）作成
 - ROADMAP.md / PROGRESS.md を最新状態に更新
 
+### 2026-04-27
+- Phase 5.5 開始・完了
+- Teachable Machine の操作性問題 → Edge Impulse に切り替え
+- Edge Impulse で noise/LOW/MID/HIGH の4クラスモデルを学習
+- WebAssembly形式でエクスポート → public/model/ に配置
+- src/lib/ 3ファイル実装（localInference / audioCapture / inferenceMode）
+- UI全面刷新:
+  - 料理モード選択画面を廃止
+  - ガイド画面を新設（菜箸・スマホ配置・測定方法の3ステップ + Tune Up!ボタン）
+  - 半円メーターを廃止 → アンビエント全画面 + 大テキスト（低温/適温/高温）
+  - 擬音語を削除
+  - LOW→MID切替時に緑フラッシュ演出
+- Phase 5.5 完了・push 済み
+
 ## 次のアクション
-- 温度計を購入
-- 実油で各ゾーン（TOO_LOW〜TOO_HIGH）の音を録音
-- Google Teachable Machine でモデル作成
-- Phase 5.5 開始（詳細は docs/PHASE_5.5.md 参照）
+- 実油で動作確認（精度検証）
+- Phase 7: Capacitor化 → iOSビルド → App Store申請
