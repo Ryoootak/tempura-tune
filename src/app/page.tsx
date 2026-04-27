@@ -7,6 +7,23 @@ import { startCapture, stopCapture } from "@/lib/audioCapture";
 // ─── Types ────────────────────────────────────────────────────
 type EIZone = "LOW" | "MID" | "HIGH";
 type ActivityState = "idle" | "permission" | "calibrating" | "listening" | "paused" | "error";
+type DebugInfo = {
+  scores: { label: string; value: number }[];
+  sampleRate: number;
+  frameCount: number;
+  topLabel: string;
+  topValue: number;
+  modelFrequency?: number;
+  sliceSize?: number;
+  rms: number;
+  peak: number;
+  baselineRms: number;
+  activeRms: number;
+  reason: string;
+  pendingState: string;
+  pendingCount: number;
+  error: string;
+};
 
 // ─── Zone config ──────────────────────────────────────────────
 const ZONE_CONFIG: Record<EIZone, {
@@ -75,7 +92,7 @@ function GuideScreen({ onStart }: { onStart: () => void }) {
     {
       icon: "🔥",
       title: "箸を油に入れる",
-      desc: "Tune Up! を押してから箸の先を油に静かに入れ、音を聞かせる。",
+      desc: "Tune Now を押してから箸の先を油に静かに入れ、音を聞かせる。",
     },
   ];
 
@@ -172,7 +189,7 @@ function GuideScreen({ onStart }: { onStart: () => void }) {
             boxShadow: "0 8px 32px rgba(255,255,255,0.18)",
           }}
         >
-          Tune Up! →
+          Tune Now
         </button>
       </div>
     </div>
@@ -273,20 +290,7 @@ function MeasureScreen({
   activity: ActivityState;
   errorMessage: string;
   onTargetFlash: boolean;
-  debugInfo: {
-    scores: { label: string; value: number }[];
-    sampleRate: number;
-    frameCount: number;
-    topLabel: string;
-    topValue: number;
-    modelFrequency?: number;
-    sliceSize?: number;
-    rms: number;
-    peak: number;
-    baselineRms: number;
-    activeRms: number;
-    error: string;
-  } | null;
+  debugInfo: DebugInfo | null;
   onBack: () => void;
   onStart: () => void;
   onPause: () => void;
@@ -420,53 +424,6 @@ function MeasureScreen({
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.22)", marginTop: 8 }}>
               換気扇をつけてから測定してください
             </div>
-            {/* デバッグパネル */}
-            {debugInfo && (
-              <div style={{
-                marginTop: 24,
-                padding: "12px 16px",
-                background: "rgba(255,255,255,0.05)",
-                border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: 12,
-                textAlign: "left",
-                fontSize: 11,
-                fontFamily: "monospace",
-              }}>
-                <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
-                  SR:{debugInfo.sampleRate}Hz  M:{debugInfo.modelFrequency ?? "-"}Hz  Slice:{debugInfo.sliceSize ?? "-"}  F:{debugInfo.frameCount}
-                </div>
-                <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
-                  TOP: {debugInfo.topLabel || "-"} {(debugInfo.topValue * 100).toFixed(0)}%
-                </div>
-                <div style={{ color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>
-                  RMS:{debugInfo.rms.toFixed(4)}  Peak:{debugInfo.peak.toFixed(3)}  Base:{debugInfo.baselineRms.toFixed(4)}  Gate:{debugInfo.activeRms.toFixed(4)}
-                </div>
-                {debugInfo.error && (
-                  <div style={{ color: "oklch(0.75 0.18 35)", marginBottom: 6, wordBreak: "break-all" }}>
-                    ERR: {debugInfo.error}
-                  </div>
-                )}
-                {debugInfo.scores.map(s => (
-                  <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                    <span style={{ width: 36, color: s.label === "noise" ? "oklch(0.78 0.17 145)" : "rgba(255,255,255,0.5)" }}>
-                      {s.label}
-                    </span>
-                    <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
-                      <div style={{
-                        height: "100%",
-                        width: `${(s.value * 100).toFixed(0)}%`,
-                        background: s.label === "noise" ? "oklch(0.78 0.17 145)" : "rgba(255,255,255,0.3)",
-                        borderRadius: 3,
-                        transition: "width 200ms",
-                      }} />
-                    </div>
-                    <span style={{ width: 34, textAlign: "right", color: "rgba(255,255,255,0.4)" }}>
-                      {(s.value * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         ) : isActive ? (
           <div
@@ -486,6 +443,58 @@ function MeasureScreen({
           </div>
         )}
       </div>
+
+      {debugInfo && isActive && (
+        <div
+          className="relative z-10 mx-5 mb-4"
+          style={{
+            padding: "12px 14px",
+            background: "rgba(255,255,255,0.055)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            borderRadius: 12,
+            textAlign: "left",
+            fontSize: 11,
+            fontFamily: "monospace",
+          }}
+        >
+          <div style={{ color: "rgba(255,255,255,0.52)", marginBottom: 6 }}>
+            {debugInfo.reason}  F:{debugInfo.frameCount}  P:{debugInfo.pendingState || "-"}:{debugInfo.pendingCount}
+          </div>
+          <div style={{ color: "rgba(255,255,255,0.42)", marginBottom: 6 }}>
+            SR:{debugInfo.sampleRate}Hz  M:{debugInfo.modelFrequency ?? "-"}Hz  Slice:{debugInfo.sliceSize ?? "-"}
+          </div>
+          <div style={{ color: debugInfo.rms >= debugInfo.activeRms ? "oklch(0.78 0.17 145)" : "oklch(0.75 0.18 35)", marginBottom: 6 }}>
+            RMS:{debugInfo.rms.toFixed(4)}  Peak:{debugInfo.peak.toFixed(3)}  Base:{debugInfo.baselineRms.toFixed(4)}  Gate:{debugInfo.activeRms.toFixed(4)}
+          </div>
+          <div style={{ color: "rgba(255,255,255,0.42)", marginBottom: 6 }}>
+            TOP: {debugInfo.topLabel || "-"} {(debugInfo.topValue * 100).toFixed(0)}%
+          </div>
+          {debugInfo.error && (
+            <div style={{ color: "oklch(0.75 0.18 35)", marginBottom: 6, wordBreak: "break-all" }}>
+              ERR: {debugInfo.error}
+            </div>
+          )}
+          {debugInfo.scores.map(s => (
+            <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+              <span style={{ width: 36, color: s.label === debugInfo.topLabel ? "rgba(255,255,255,0.82)" : "rgba(255,255,255,0.45)" }}>
+                {s.label}
+              </span>
+              <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%",
+                  width: `${(s.value * 100).toFixed(0)}%`,
+                  background: s.label === debugInfo.topLabel ? "oklch(0.78 0.17 145)" : "rgba(255,255,255,0.28)",
+                  borderRadius: 3,
+                  transition: "width 200ms",
+                }} />
+              </div>
+              <span style={{ width: 34, textAlign: "right", color: "rgba(255,255,255,0.4)" }}>
+                {(s.value * 100).toFixed(0)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Error */}
       {errorMessage && (
@@ -566,20 +575,7 @@ export default function Home() {
   const [weakSignal, setWeakSignal] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [onTargetFlash, setOnTargetFlash] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<{
-    scores: { label: string; value: number }[];
-    sampleRate: number;
-    frameCount: number;
-    topLabel: string;
-    topValue: number;
-    modelFrequency?: number;
-    sliceSize?: number;
-    rms: number;
-    peak: number;
-    baselineRms: number;
-    activeRms: number;
-    error: string;
-  } | null>(null);
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
 
   const loopActiveRef = useRef(false);
   const prevZoneRef = useRef<EIZone | null>(null);
@@ -635,8 +631,7 @@ export default function Home() {
           const label = top.label as EILabel;
           const activeRms = Math.max(MIN_ACTIVE_RMS, baselineRmsRef.current * BASELINE_MULTIPLIER);
 
-          // デバッグ情報を更新
-          if (frameCountRef.current % 5 === 0) {
+          const updateDebugInfo = (reason: string) => {
             setDebugInfo({
               scores: results,
               sampleRate,
@@ -649,20 +644,25 @@ export default function Home() {
               peak: features.peak,
               baselineRms: baselineRmsRef.current,
               activeRms,
+              reason,
+              pendingState: pendingRef.current.state,
+              pendingCount: pendingRef.current.count,
               error: "",
             });
-          }
+          };
 
           // ── キャリブレーション: 換気扇・環境音の音量ベースラインを測る ──
           if (!noiseReadyRef.current) {
             baselineSamplesRef.current.push(features.rms);
             calibCountRef.current++;
+            if (frameCountRef.current % 3 === 0) updateDebugInfo("CALIBRATING");
 
             if (calibCountRef.current >= CALIBRATE_FRAMES) {
               const sorted = [...baselineSamplesRef.current].sort((a, b) => a - b);
               baselineRmsRef.current = sorted[Math.floor(sorted.length / 2)] ?? 0;
               noiseReadyRef.current = true;
               pendingRef.current = { state: "", count: 0 };
+              updateDebugInfo("READY");
               setActivity("listening");
             }
             return;
@@ -671,6 +671,7 @@ export default function Home() {
           // ── 測定フェーズ ──────────────────────────────────────
           if (features.rms < activeRms) {
             pendingRef.current = { state: "noise", count: pendingRef.current.state === "noise" ? pendingRef.current.count + 1 : 1 };
+            if (frameCountRef.current % 3 === 0) updateDebugInfo("BELOW_GATE");
             if (pendingRef.current.count >= COMMIT_FRAMES) {
               setNoOil(true);
               setWeakSignal(false);
@@ -691,6 +692,7 @@ export default function Home() {
             pendingRef.current = { state: candidate, count: 1 };
           }
 
+          if (frameCountRef.current % 3 === 0) updateDebugInfo(`CANDIDATE:${candidate}`);
           if (pendingRef.current.count < COMMIT_FRAMES) return;
 
           if (candidate === "weak") {
@@ -728,6 +730,9 @@ export default function Home() {
             baselineRms: baselineRmsRef.current,
             activeRms: Math.max(MIN_ACTIVE_RMS, baselineRmsRef.current * BASELINE_MULTIPLIER),
             error: msg,
+            reason: "ERROR",
+            pendingState: pendingRef.current.state,
+            pendingCount: pendingRef.current.count,
           });
         }
       });
