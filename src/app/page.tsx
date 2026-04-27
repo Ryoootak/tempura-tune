@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { loadModel, classifyContinuous, getAudioFeatures, getModelProperties, resetClassifier, resampleLinear, EILabel } from "@/lib/localInference";
-import { startCapture, stopCapture } from "@/lib/audioCapture";
+import { AudioCaptureInfo, startCapture, stopCapture } from "@/lib/audioCapture";
 
 // ─── Types ────────────────────────────────────────────────────
 type EIZone = "LOW" | "MID" | "HIGH";
@@ -22,6 +22,7 @@ type DebugInfo = {
   reason: string;
   pendingState: string;
   pendingCount: number;
+  captureInfo?: AudioCaptureInfo;
   error: string;
 };
 
@@ -393,10 +394,10 @@ function MeasureScreen({
               ─ ─ ─ ─ ─ ─ ─ ─ ─
             </div>
             <div style={{ fontSize: 20, fontWeight: 700, color: "rgba(255,255,255,0.45)" }}>
-              換気扇、切れてる?
+              音が届いていません
             </div>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>
-              換気扇をつけてから測定してみて
+              マイク入力と距離を確認してください
             </div>
           </div>
         ) : noOil && activity === "listening" ? (
@@ -463,8 +464,18 @@ function MeasureScreen({
           <div style={{ color: "rgba(255,255,255,0.42)", marginBottom: 6 }}>
             SR:{debugInfo.sampleRate}Hz  M:{debugInfo.modelFrequency ?? "-"}Hz  Slice:{debugInfo.sliceSize ?? "-"}
           </div>
+          {debugInfo.captureInfo && (
+            <div style={{ color: "rgba(255,255,255,0.42)", marginBottom: 6, wordBreak: "break-word" }}>
+              Mic:{debugInfo.captureInfo.trackLabel || "-"}  State:{debugInfo.captureInfo.trackReadyState || "-"}  Muted:{String(debugInfo.captureInfo.trackMuted ?? "-")}
+            </div>
+          )}
+          {debugInfo.captureInfo?.audioInputs && (
+            <div style={{ color: "rgba(255,255,255,0.32)", marginBottom: 6, wordBreak: "break-word" }}>
+              Inputs:{debugInfo.captureInfo.audioInputs.join(" / ")}
+            </div>
+          )}
           <div style={{ color: debugInfo.rms >= debugInfo.activeRms ? "oklch(0.78 0.17 145)" : "oklch(0.75 0.18 35)", marginBottom: 6 }}>
-            RMS:{debugInfo.rms.toFixed(4)}  Peak:{debugInfo.peak.toFixed(3)}  Base:{debugInfo.baselineRms.toFixed(4)}  Gate:{debugInfo.activeRms.toFixed(4)}
+            RMS:{debugInfo.rms.toExponential(2)}  Peak:{debugInfo.peak.toExponential(2)}  Base:{debugInfo.baselineRms.toExponential(2)}  Gate:{debugInfo.activeRms.toExponential(2)}
           </div>
           <div style={{ color: "rgba(255,255,255,0.42)", marginBottom: 6 }}>
             TOP: {debugInfo.topLabel || "-"} {(debugInfo.topValue * 100).toFixed(0)}%
@@ -586,10 +597,12 @@ export default function Home() {
   const frameCountRef = useRef(0);
   const baselineRmsRef = useRef(0);
   const baselineSamplesRef = useRef<number[]>([]);
+  const captureInfoRef = useRef<AudioCaptureInfo | undefined>(undefined);
   const COMMIT_FRAMES = 3;
   const CALIBRATE_FRAMES = 12;
   const MIN_ACTIVE_RMS = 0.006;
   const BASELINE_MULTIPLIER = 2.2;
+  const SILENT_PEAK = 0.00003;
 
   useEffect(() => {
     return () => {
@@ -612,6 +625,7 @@ export default function Home() {
     frameCountRef.current = 0;
     baselineRmsRef.current = 0;
     baselineSamplesRef.current = [];
+    captureInfoRef.current = undefined;
     try {
       await loadModel();
       resetClassifier();
@@ -621,9 +635,38 @@ export default function Home() {
         if (!loopActiveRef.current) return;
         frameCountRef.current++;
         try {
+          const features = getAudioFeatures(samples);
+          const isSilentInput = features.peak < SILENT_PEAK;
+          if (isSilentInput) {
+            const activeRms = Math.max(MIN_ACTIVE_RMS, baselineRmsRef.current * BASELINE_MULTIPLIER);
+            setDebugInfo({
+              scores: [],
+              sampleRate,
+              frameCount: frameCountRef.current,
+              topLabel: "",
+              topValue: 0,
+              modelFrequency: modelProperties?.frequency,
+              sliceSize: modelProperties?.slice_size,
+              rms: features.rms,
+              peak: features.peak,
+              baselineRms: baselineRmsRef.current,
+              activeRms,
+              reason: "INPUT_SILENT",
+              pendingState: pendingRef.current.state,
+              pendingCount: pendingRef.current.count,
+              captureInfo: captureInfoRef.current,
+              error: "",
+            });
+            if (noiseReadyRef.current) {
+              setWeakSignal(true);
+              setNoOil(false);
+              setCurrentZone(null);
+            }
+            return;
+          }
+
           const modelSampleRate = modelProperties?.frequency ?? sampleRate;
           const modelSamples = resampleLinear(samples, sampleRate, modelSampleRate);
-          const features = getAudioFeatures(samples);
           const { results } = classifyContinuous(modelSamples);
           if (results.length === 0) throw new Error("分類結果が空です");
 
@@ -647,6 +690,7 @@ export default function Home() {
               reason,
               pendingState: pendingRef.current.state,
               pendingCount: pendingRef.current.count,
+              captureInfo: captureInfoRef.current,
               error: "",
             });
           };
@@ -733,8 +777,11 @@ export default function Home() {
             reason: "ERROR",
             pendingState: pendingRef.current.state,
             pendingCount: pendingRef.current.count,
+            captureInfo: captureInfoRef.current,
           });
         }
+      }, (info) => {
+        captureInfoRef.current = info;
       });
       setActivity("calibrating");
     } catch (error) {
