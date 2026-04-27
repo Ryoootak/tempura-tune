@@ -491,6 +491,8 @@ export default function Home() {
   const loopActiveRef = useRef(false);
   const prevZoneRef = useRef<EIZone | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<{ state: string; count: number }>({ state: "", count: 0 });
+  const COMMIT_FRAMES = 3; // 3フレーム（約750ms）連続で一致したら確定
 
   useEffect(() => {
     return () => {
@@ -506,6 +508,7 @@ export default function Home() {
     setWeakSignal(false);
     setCurrentZone(null);
     prevZoneRef.current = null;
+    pendingRef.current = { state: "", count: 0 };
     try {
       await loadModel();
       loopActiveRef.current = true;
@@ -516,19 +519,33 @@ export default function Home() {
           const top = results.reduce((a, b) => (a.value > b.value ? a : b));
           const label = top.label as EILabel;
 
-          if (top.value < THRESHOLD[label]) {
-            // 信頼度が閾値未満 → 弱シグナル
+          // 候補ステートを決定
+          const candidate =
+            top.value < THRESHOLD[label] ? "weak"
+            : label === "noise"          ? "noise"
+            : label; // LOW / MID / HIGH
+
+          // 連続フレーム数をカウント、変わったらリセット
+          if (pendingRef.current.state === candidate) {
+            pendingRef.current.count++;
+          } else {
+            pendingRef.current = { state: candidate, count: 1 };
+          }
+
+          // COMMIT_FRAMES 未満はまだ確定しない
+          if (pendingRef.current.count < COMMIT_FRAMES) return;
+
+          // 確定: ステートを反映
+          if (candidate === "weak") {
             setWeakSignal(true);
             setNoOil(false);
             setCurrentZone(null);
-          } else if (label === "noise") {
-            // noise class が勝利 → 油が静かな状態
+          } else if (candidate === "noise") {
             setNoOil(true);
             setWeakSignal(false);
             setCurrentZone(null);
           } else {
-            // LOW / MID / HIGH が閾値以上で検出
-            const zone = label as EIZone;
+            const zone = candidate as EIZone;
             setNoOil(false);
             setWeakSignal(false);
             if (zone === "MID" && prevZoneRef.current !== "MID") {
