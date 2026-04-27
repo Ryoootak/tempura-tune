@@ -51,6 +51,14 @@ const ZONE_CONFIG: Record<EIZone, {
   },
 };
 
+// ─── Confidence thresholds ────────────────────────────────────
+const THRESHOLD: Record<string, number> = {
+  noise: 0.40,
+  LOW:   0.45,
+  MID:   0.50,
+  HIGH:  0.40,
+};
+
 // ─── Guide screen ─────────────────────────────────────────────
 function GuideScreen({ onStart }: { onStart: () => void }) {
   const steps = [
@@ -247,6 +255,7 @@ function OnTargetFlash({ visible }: { visible: boolean }) {
 function MeasureScreen({
   zone,
   noOil,
+  weakSignal,
   activity,
   errorMessage,
   onTargetFlash,
@@ -258,6 +267,7 @@ function MeasureScreen({
 }: {
   zone: EIZone | null;
   noOil: boolean;
+  weakSignal: boolean;
   activity: ActivityState;
   errorMessage: string;
   onTargetFlash: boolean;
@@ -357,18 +367,26 @@ function MeasureScreen({
               {cfg.judgment}
             </div>
           </>
+        ) : weakSignal && isActive ? (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.12em", color: "rgba(255,255,255,0.2)", marginBottom: 20 }}>
+              ─ ─ ─ ─ ─ ─ ─ ─ ─
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "rgba(255,255,255,0.45)" }}>
+              換気扇、切れてる?
+            </div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>
+              換気扇をつけてから測定してみて
+            </div>
+          </div>
         ) : noOil && isActive ? (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>🥢</div>
-            <div
-              style={{
-                fontSize: 16,
-                color: "rgba(255,255,255,0.38)",
-                lineHeight: 1.8,
-              }}
-            >
-              油の音が聞こえません<br />
-              <span style={{ fontSize: 13 }}>箸を油に入れてください</span>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🫕</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "rgba(255,255,255,0.45)" }}>
+              油が静かです
+            </div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>
+              箸を油に入れてください
             </div>
           </div>
         ) : isActive ? (
@@ -466,6 +484,7 @@ export default function Home() {
   const [activity, setActivity] = useState<ActivityState>("idle");
   const [currentZone, setCurrentZone] = useState<EIZone | null>(null);
   const [noOil, setNoOil] = useState(false);
+  const [weakSignal, setWeakSignal] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [onTargetFlash, setOnTargetFlash] = useState(false);
 
@@ -484,6 +503,7 @@ export default function Home() {
   async function startRecording() {
     setActivity("permission");
     setNoOil(false);
+    setWeakSignal(false);
     setCurrentZone(null);
     prevZoneRef.current = null;
     try {
@@ -495,12 +515,22 @@ export default function Home() {
           const { results } = classifyContinuous(samples);
           const top = results.reduce((a, b) => (a.value > b.value ? a : b));
           const label = top.label as EILabel;
-          if (label === "noise") {
+
+          if (top.value < THRESHOLD[label]) {
+            // 信頼度が閾値未満 → 弱シグナル
+            setWeakSignal(true);
+            setNoOil(false);
+            setCurrentZone(null);
+          } else if (label === "noise") {
+            // noise class が勝利 → 油が静かな状態
             setNoOil(true);
+            setWeakSignal(false);
             setCurrentZone(null);
           } else {
+            // LOW / MID / HIGH が閾値以上で検出
             const zone = label as EIZone;
             setNoOil(false);
+            setWeakSignal(false);
             if (zone === "MID" && prevZoneRef.current !== "MID") {
               setOnTargetFlash(true);
               if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
@@ -534,6 +564,7 @@ export default function Home() {
     setActivity("idle");
     setCurrentZone(null);
     setNoOil(false);
+    setWeakSignal(false);
     setErrorMessage("");
     setScreen("guide");
   }
@@ -556,6 +587,7 @@ export default function Home() {
     <MeasureScreen
       zone={currentZone}
       noOil={noOil}
+      weakSignal={weakSignal}
       activity={activity}
       errorMessage={errorMessage}
       onTargetFlash={onTargetFlash}
