@@ -1,227 +1,226 @@
-# Phase 5.5: Teachable Machine オンデバイス推論への移行
+# Phase 5.5: Edge Impulse WebAssembly オンデバイス推論への移行
 
 ## 目的
-Gemini API（クラウド推論）を、自分のキッチン音で学習した
-Teachable Machine モデル（オンデバイス推論）に差し替える。
+Gemini API（クラウド推論）を、Edge Impulse で学習した自前モデル（WebAssembly）に差し替える。
 API コストゼロ・オフライン動作・環境特化の高精度を実現する。
 
 ---
 
-## クラス設計方針
+## 前提（完了済み）
 
-10°C 刻りの実測温度ラベルで学習し、UIにも温度数値を表示する。
-境界（140°C以下・195°C以上）のみ "Too Low" / "Too High" で表示する。
-
-### クラス一覧と UI 表示
-
-| クラス名      | 録音目標温度 | UI 表示      | メモ |
-|---|---|---|---|
-| `TOO_LOW`     | ～135°C    | **Too Low**  | 加熱前〜ほぼ無音の状態 |
-| `TEMP_140`    | 140°C      | **約140°C**  | ごく弱い気泡が出始める |
-| `TEMP_150`    | 150°C      | **約150°C**  |  |
-| `TEMP_160`    | 160°C      | **約160°C**  |  |
-| `TEMP_170`    | 170°C      | **約170°C**  | 最重要クラス |
-| `TEMP_180`    | 180°C      | **約180°C**  | 天ぷら帯 |
-| `TEMP_190`    | 190°C      | **約190°C**  |  |
-| `TOO_HIGH`    | 195°C      | **Too High** | 収録できた場合のみ追加。200°C以上は不要 |
-| `BACKGROUND`  | —          | （非表示）   | 油なし・キッチン環境音 |
-
-> **安全メモ**: サラダ油の発煙点は約200〜220°C。
-> `TOO_HIGH` の録音は 195°C で切り上げ、それ以上は上げない。
-> 収録が難しければ `TOO_HIGH` クラスは省いて 7 クラス構成でも OK。
+- [x] Edge Impulse で音声収録・学習済み
+- [x] WebAssembly 形式でエクスポート済み（`browser/` フォルダ）
 
 ---
 
-## 前提条件
-- 温度計（油温対応のサーモプローブ推奨）が手元にある
-- 揚げ物ができる環境（油・鍋・コンロ）がある
-- 現行の Gemini API 版が動作確認済み ✅
+## クラス設計
+
+| クラス名  | 録音温度帯        | UI 表示          | メモ |
+|-----------|-------------------|------------------|------|
+| `noise`   | 油なし・環境音    | （非表示）       | 換気扇・キッチン環境音 |
+| `LOW`     | 140°C・150°C     | **低温**         | もう少し加熱を |
+| `MID`     | 160°C・170°C・180°C | **適温**      | 天ぷら OK ゾーン |
+| `HIGH`    | 190°C・195°C     | **高温**         | 火を弱めて |
+
+温度数値の推定・補間表示はなし。ゾーン表示のみ。
 
 ---
 
-## Step 1: 録音データ収集
+## Step 1: ファイル配置
 
-### 用意するもの
-- 温度計（油温対応のもの）
-- 録音用スマホまたは PC（本番環境と同じデバイス推奨）
-- 油・鍋・コンロ
+`browser/` フォルダの 2 ファイルを `public/model/` に置く。
 
-### 録音量の目安
-
-| クラス | 最低録音時間 | 理想 |
-|---|---|---|
-| 各温度クラス（TOO_LOW 含む） | 60秒 | 90秒 |
-| BACKGROUND | 30秒 | 60秒 |
-
-> Teachable Machine は 1 秒単位でサンプルを区切る。
-> 60秒 ≒ 60サンプル。各クラス最低 40 サンプル（40秒）以上が目標。
-
-### 油から音を出す方法
-
-油自体は静かなので、音を作るために何かを入れる必要があります。
-
-**おすすめ: 木製の菜箸（水で濡らしてから使う）**
-木に含まれる水分が油に触れて蒸発し、気泡音が出ます。
-
-準備:
-1. 箸を水で濡らす
-2. キッチンペーパーで軽く1回拭く（びしょ濡れだと油が跳ねて危険）
-3. 油に先端をゆっくり沈める
-
-録音中のリズム:
-```
-[濡らして拭く] → 沈める3秒 → 引き上げる2秒 → 沈める3秒 → 引き上げる2秒
-→ 沈める3秒 → 引き上げる2秒 → [また濡らして拭く] → 繰り返し
-```
-- 1回濡らすと 2〜3 回分（15〜20秒）は音が出る
-- 音が弱くなってきたら（乾いてきた合図）すぐ濡らし直す
-- 引き上げている間も録音は止めなくてよい（その数秒は静かになるが、少量なら精度に影響しない）
-- 温度が低いほど気泡が少なく静か、高いほど激しくなる
-
-**代替: 小さなパン粉ひとつまみ**
-少量を油に落とすとすぐ音が出ます。温度による違いが出やすくわかりやすいですが、焦げて油が汚れるので、各温度の最後に使うのがおすすめです。
-
-**TOO_LOW（140°C以下）の注意**
-油がほぼ無音のため、箸を入れてもほとんど音が出ません。それが正解です。
-無音〜ごく弱い音を60秒録音してください。
-
----
-
-### 温度を安定させるコツ
-
-油の温度はコンロの火加減で変わります。「火をつけっぱなしにするとどんどん上がる」のは正しくて、これを制御するのが温度管理です。
-
-**基本の手順**
-
-```
-1. 中火〜中強火で加熱を始める
-2. 目標温度の 5〜10°C 手前になったら弱火に切り替える
-3. 温度計を見ながら目標 ±2°C になるまで待つ（1〜2分）
-4. その温度に合った火加減（弱火〜極弱火）をキープしながら録音
-```
-
-**火加減の目安（コンロや鍋によって異なります）**
-
-| 温度帯 | おおよその火加減 |
-|---|---|
-| 140〜150°C | 極弱火（最小）|
-| 160〜170°C | 弱火 |
-| 180°C | 弱〜中弱火 |
-| 190°C | 中弱火 |
-
-> あくまで目安です。温度計で実測しながら調整してください。
-
-**温度が上がりすぎたとき**
-いったん火を止めるか最小にして、温度計を見ながら目標まで下がるのを待ちます。
-油の量が多いほど温度変化がゆっくりになって管理しやすくなります。
-
-**油の量について**
-鍋底から **3〜4cm 以上** の深さがあると熱容量が増えて温度が安定します。
-薄すぎると火加減のちょっとした変化で温度が大きく上下するので難しくなります。
-
----
-
-### セッション全体のコツ
-- **低い温度から順番に録る**（140 → 150 → … → 190）。高い温度から下げるのは時間がかかる
-- スマホのマイクを鍋の 20〜30cm 上に固定（毎回同じ位置）
-- **換気扇はつけたまま録音する**（実際の料理環境と一致させる）
-- BACKGROUND クラスは油を入れる前・換気扇だけつけた状態で録る
-- 各クラスを録り終えたら Teachable Machine にすぐアップロードして確認
-
----
-
-## Step 2: Teachable Machine でモデル作成
-
-1. [Google Teachable Machine](https://teachablemachine.withgoogle.com/) を開く
-2. **Audio Project** を選択
-3. クラスを作成（TOO_LOW / TEMP_140 / TEMP_150 / TEMP_160 / TEMP_170 / TEMP_180 / TEMP_190 / [TOO_HIGH] / BACKGROUND）
-4. 各クラスに録音データをアップロード（または直接マイク録音）
-5. **Train Model** を押す（ブラウザ上で 3〜8 分）
-6. **Preview** タブで各クラスの認識精度を確認
-   - Confusion Matrix でクラス間の誤認識を確認
-   - 隣接クラス（例: TEMP_160 と TEMP_170）の混同が多い場合は追加録音して再学習
-7. **Export Model** → **TensorFlow.js** 形式でダウンロード
-
-### エクスポートされるファイル構成
-```
-model.json       ← モデルアーキテクチャ
-weights.bin      ← 学習済み重み
-metadata.json    ← クラスラベル等のメタ情報
-```
-
----
-
-## Step 3: Next.js への統合
-
-### 3-1. パッケージインストール
-```bash
-npm install @tensorflow/tfjs @tensorflow-models/speech-commands
-```
-
-### 3-2. モデルファイルの配置
 ```
 public/
   model/
-    model.json
-    weights.bin
-    metadata.json
+    edge-impulse-standalone.js    ← browser/ からコピー
+    edge-impulse-standalone.wasm  ← browser/ からコピー
 ```
 
-### 3-3. コードの差し替え
+---
 
-`analyzeAudioChunk()` 関数を差し替えるだけ。
-既存の `/api/analyze` との切り替えは定数 1 行で制御できるようにする。
+## Step 2: ラッパー実装
+
+```typescript
+// src/lib/localInference.ts
+
+declare const Module: any;
+
+type EIResult = {
+  results: { label: string; value: number }[];
+  anomaly: number;
+};
+
+// run-impulse.js の EdgeImpulseClassifier をそのまま移植
+class EdgeImpulseClassifier {
+  private static _initialized = false;
+
+  async init(): Promise<void> {
+    if (EdgeImpulseClassifier._initialized) return;
+    return new Promise((resolve, reject) => {
+      Module.onRuntimeInitialized = () => {
+        EdgeImpulseClassifier._initialized = true;
+        const ret = Module.init();
+        if (typeof ret === "number" && ret !== 0) {
+          return reject("init() failed: " + ret);
+        }
+        resolve();
+      };
+    });
+  }
+
+  classifyContinuous(rawData: number[]): EIResult {
+    const typedArray = new Float32Array(rawData);
+    const numBytes = typedArray.length * 4;
+    const ptr = Module._malloc(numBytes);
+    const heap = new Uint8Array(Module.HEAPU8.buffer, ptr, numBytes);
+    heap.set(new Uint8Array(typedArray.buffer));
+    const ret = Module.run_classifier_continuous(ptr, rawData.length, false, true);
+    Module._free(ptr);
+    if (ret.result !== 0) throw new Error("Classification failed: " + ret.result);
+    const results: { label: string; value: number }[] = [];
+    for (let i = 0; i < ret.size(); i++) {
+      const c = ret.get(i);
+      results.push({ label: c.label, value: c.value });
+      c.delete();
+    }
+    ret.delete();
+    return { anomaly: ret.anomaly ?? 0, results };
+  }
+
+  getProperties() {
+    return Module.get_properties();
+  }
+}
+
+let classifier: EdgeImpulseClassifier | null = null;
+
+export async function loadModel(): Promise<void> {
+  // WASM スクリプトを動的ロード
+  await new Promise<void>((resolve, reject) => {
+    if (document.querySelector('script[src="/model/edge-impulse-standalone.js"]')) {
+      return resolve();
+    }
+    const script = document.createElement("script");
+    script.src = "/model/edge-impulse-standalone.js";
+    script.onload = () => resolve();
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+  classifier = new EdgeImpulseClassifier();
+  await classifier.init();
+}
+
+export function classifyContinuous(samples: number[]) {
+  if (!classifier) throw new Error("Model not loaded");
+  return classifier.classifyContinuous(samples);
+}
+```
+
+---
+
+## Step 3: マイク → 推論ループ
+
+Edge Impulse はフレームサイズ・サンプルレートをモデルが持っている。
+`getProperties()` で確認できるが、Edge Impulse の音声モデルは通常 **16000 Hz**。
+
+```typescript
+// src/lib/audioCapture.ts
+let audioContext: AudioContext | null = null;
+let processor: ScriptProcessorNode | null = null;
+
+export async function startCapture(
+  onSamples: (samples: number[]) => void
+): Promise<void> {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  audioContext = new AudioContext({ sampleRate: 16000 });
+  const source = audioContext.createMediaStreamSource(stream);
+  processor = audioContext.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (e) => {
+    const data = e.inputBuffer.getChannelData(0);
+    onSamples(Array.from(data));
+  };
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+}
+
+export function stopCapture(): void {
+  processor?.disconnect();
+  audioContext?.close();
+  processor = null;
+  audioContext = null;
+}
+```
+
+---
+
+## Step 4: クラスラベル → UI マッピング
+
+```typescript
+// src/app/page.tsx に追加
+type EILabel = "noise" | "LOW" | "MID" | "HIGH";
+
+const LABEL_DISPLAY: Record<EILabel, {
+  text: string;
+  onomato: string;
+  needleTemp: number | null; // メーター針の固定位置
+}> = {
+  noise: { text: "",     onomato: "",         needleTemp: null },
+  LOW:   { text: "低温", onomato: "ジュ…",    needleTemp: 145  },
+  MID:   { text: "適温", onomato: "ピチピチ", needleTemp: 170  },
+  HIGH:  { text: "高温", onomato: "バチ！",   needleTemp: 192  },
+};
+```
+
+---
+
+## Step 5: 推論モード切替
 
 ```typescript
 // src/lib/inferenceMode.ts
 export const INFERENCE_MODE: "api" | "local" = "local";
 ```
 
-`page.tsx` 側は `INFERENCE_MODE` を見て呼び出し先を切り替える。
-Teachable Machine 側は 2 秒録音でなく **リアルタイムストリーム推論** になるため、
-ループ構造も変更が必要（`recognizer.listen()` を使う）。
-
-### 3-4. クラスラベル → UI 表示のマッピング
+`page.tsx` の `startRecording` 内で分岐:
 
 ```typescript
-const LABEL_DISPLAY: Record<string, { text: string; temp: number | null }> = {
-  TOO_LOW:    { text: "Too Low",  temp: null },
-  TEMP_140:   { text: "約140°C", temp: 140 },
-  TEMP_150:   { text: "約150°C", temp: 150 },
-  TEMP_160:   { text: "約160°C", temp: 160 },
-  TEMP_170:   { text: "約170°C", temp: 170 },
-  TEMP_180:   { text: "約180°C", temp: 180 },
-  TEMP_190:   { text: "約190°C", temp: 190 },
-  TOO_HIGH:   { text: "Too High", temp: null },
-  BACKGROUND: { text: "",         temp: null },
-};
-// temp が null でないクラスはメーター針を実温度で動かす
-// confidence スコアで隣接クラス間を補間 → 針がなめらかに動く
+if (INFERENCE_MODE === "local") {
+  await loadModel();
+  setActivity("listening");
+  await startCapture((samples) => {
+    if (!loopActiveRef.current) return;
+    const { results } = classifyContinuous(samples);
+    const top = results.reduce((a, b) => a.value > b.value ? a : b);
+    const label = top.label as EILabel;
+    const display = LABEL_DISPLAY[label];
+    if (label === "noise") {
+      setResult({ label, text: "", onomato: "", needleTemp: null });
+    } else {
+      setResult({ label, text: display.text, onomato: display.onomato, needleTemp: display.needleTemp });
+    }
+  });
+} else {
+  await runAnalysisLoop(stream, mode.id);
+}
 ```
 
 ---
 
-## Step 4: 精度検証
+## Step 6: UI 変更点
 
-- 実油で各温度 5 回ずつテスト（温度計で確認しながら）
-- 正解率を記録（目標: 各クラス 75% 以上、隣接クラスとの混同は許容）
-- 誤分類が多いクラスは追加サンプルで再学習
-- リアルタイム推論で体感のラグを確認
-
----
-
-## Step 5: UI 調整
-
-- `temp` が数値のクラスはメーター針を実温度位置に表示
-- confidence スコアで隣接クラス間を補間し、針をなめらかに動かす
-- `BACKGROUND` 検出時は「油の音が聞こえません」を表示
-- `TOO_LOW` / `TOO_HIGH` のゾーン色は現行デザインを維持
+| 項目 | 現行（API） | ローカルモード |
+|---|---|---|
+| メーター中央テキスト | ゾーン名（MEDIUM等） | 低温 / 適温 / 高温 |
+| 擬音語 | ZONE_DISPLAY 参照 | LABEL_DISPLAY 参照 |
+| 針位置 | ZONE_NEEDLE_TEMP 固定値 | LABEL_DISPLAY.needleTemp 固定値 |
+| noise 検出時 | — | "油の音が聞こえません" 表示 |
 
 ---
 
 ## 完了条件
 
-- [ ] 各クラス 75% 以上の認識精度（隣接クラスとの混同は許容）
-- [ ] 実油テスト 5 回以上で判定が安定
+- [ ] `public/model/` にファイル配置完了
+- [ ] ローカル推論でリアルタイム判定が動く
+- [ ] noise / LOW / MID / HIGH が正しく切り替わる
 - [ ] API コールが完全にゼロ（オフライン動作確認）
 - [ ] Vercel デプロイで本番動作確認
