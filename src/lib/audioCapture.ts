@@ -4,9 +4,9 @@ let captureStream: MediaStream | null = null;
 
 export async function startCapture(onSamples: (samples: Float32Array) => void): Promise<void> {
   captureStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, sampleRate: 16000 },
+    audio: { channelCount: 1 },
   });
-  audioContext = new AudioContext({ sampleRate: 16000 });
+  audioContext = new AudioContext({ sampleRate: 48000 });
   const source = audioContext.createMediaStreamSource(captureStream);
   processor = audioContext.createScriptProcessor(4096, 1, 1);
   processor.onaudioprocess = (e) => {

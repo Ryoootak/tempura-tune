@@ -55,7 +55,7 @@ const ZONE_CONFIG: Record<EIZone, {
 const THRESHOLD: Record<string, number> = {
   noise: 0.40,
   LOW:   0.45,
-  MID:   0.50,
+  MID:   0.60,
   HIGH:  0.40,
 };
 
