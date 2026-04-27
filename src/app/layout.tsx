@@ -10,14 +10,6 @@ const manrope = Manrope({
 export const metadata: Metadata = {
   title: "TempuraTune",
   description: "AIが油の温度を音で判定する、天ぷら職人のためのアプリ",
-  icons: {
-    icon: [
-      { url: "/icons/favicon.png", type: "image/png" },
-      { url: "/icons/app-icon.png", type: "image/png" },
-    ],
-    shortcut: "/icons/favicon.png",
-    apple: "/icons/app-icon.png",
-  },
 };
 
 export default function RootLayout({
